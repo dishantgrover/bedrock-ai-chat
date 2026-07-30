@@ -1,5 +1,8 @@
 import { useMemo } from 'react';
 
+import { APP_NAME } from '../branding.js';
+import Logo from './Logo.jsx';
+
 /**
  * Conversation list. Renders as a fixed rail on desktop and as an off-canvas
  * drawer on small screens.
@@ -50,6 +53,11 @@ export default function Sidebar({
         ].join(' ')}
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       >
+        <div className="flex items-center gap-2 px-4 pt-4 pb-1 text-zinc-100">
+          <Logo size={20} />
+          <span className="text-base font-semibold tracking-tight">{APP_NAME}</span>
+        </div>
+
         <div className="flex items-center gap-2 p-3">
           <button
             type="button"

@@ -39,7 +39,9 @@ Parameters:
 
   DomainName:
     Type: String
-    Description: Fully qualified name to publish, for example ai.dishantgrover.com
+    Description: >-
+      Fully qualified name to publish, for example chat.example.com. The origin is
+      published at origin.<this name>, so both must sit inside the hosted zone.
     AllowedPattern: '^[a-z0-9.-]+\.[a-z]{2,}$'
 
   VpcId:

@@ -3,8 +3,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './api.js';
 import { AuthExpiredError } from './api.js';
 import { currentUser, initAuth, signOut } from './auth.js';
+import { APP_NAME, APP_TAGLINE } from './branding.js';
 import Composer from './components/Composer.jsx';
 import Login from './components/Login.jsx';
+import Logo from './components/Logo.jsx';
 import Message from './components/Message.jsx';
 import ModelPicker from './components/ModelPicker.jsx';
 import Sidebar from './components/Sidebar.jsx';
@@ -266,8 +268,11 @@ export default function App() {
             <h1 className="truncate text-sm font-medium">
               {activeId
                 ? conversations.find((item) => item.id === activeId)?.title || 'Chat'
-                : 'New chat'}
+                : `New chat`}
             </h1>
+            {!activeModel && (
+              <p className="truncate text-xs text-zinc-500 md:hidden">{APP_NAME}</p>
+            )}
             {activeModel && (
               <p className="truncate text-xs text-zinc-500">{activeModel.label}</p>
             )}
@@ -277,11 +282,20 @@ export default function App() {
         <div ref={scrollRef} className="chat-scroll flex-1 overflow-y-auto">
           {!activeId && messages.length === 0 ? (
             <div className="grid h-full place-items-center px-4 py-8">
-              <ModelPicker
-                models={config.models}
-                selectedId={selectedModelId}
-                onSelect={setSelectedModelId}
-              />
+              <div className="w-full max-w-md">
+                <div className="mb-8 text-center">
+                  <div className="mb-2 flex items-center justify-center gap-2 text-zinc-100">
+                    <Logo size={28} />
+                    <span className="text-2xl font-semibold tracking-tight">{APP_NAME}</span>
+                  </div>
+                  <p className="text-sm text-zinc-500">{APP_TAGLINE}</p>
+                </div>
+                <ModelPicker
+                  models={config.models}
+                  selectedId={selectedModelId}
+                  onSelect={setSelectedModelId}
+                />
+              </div>
             </div>
           ) : (
             <div className="mx-auto max-w-3xl space-y-5 px-3 py-5">

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 
 import { completeNewPassword, signIn } from '../auth.js';
+import { APP_DESCRIPTION, APP_NAME, APP_TAGLINE } from '../branding.js';
+import Logo from './Logo.jsx';
 
 /**
  * Sign-in screen. Accounts are created by an administrator, so there is no
@@ -50,11 +52,15 @@ export default function Login({ onSignedIn }) {
     <div className="h-full flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-semibold">AI Chat</h1>
-          <p className="mt-2 text-sm text-zinc-400">
+          <div className="mb-3 flex items-center justify-center gap-2 text-zinc-100">
+            <Logo size={26} />
+            <span className="text-2xl font-semibold tracking-tight">{APP_NAME}</span>
+          </div>
+          <p className="text-sm text-zinc-500">{APP_TAGLINE}</p>
+          <p className="mt-4 text-sm text-zinc-400">
             {mustChangePassword
               ? 'Choose a permanent password to finish setting up your account.'
-              : 'Sign in to continue.'}
+              : APP_DESCRIPTION}
           </p>
         </div>
 
