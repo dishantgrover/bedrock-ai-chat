@@ -23,6 +23,9 @@
     "helmet": "8.0.0",
     "openai": "4.77.0"
   },
+  "devDependencies": {
+    "amazon-cognito-identity-js": "6.3.12"
+  },
   "engines": {
     "node": ">=20"
   }

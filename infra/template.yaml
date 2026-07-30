@@ -16,8 +16,8 @@ Metadata:
       - Label:
           default: Networking
         Parameters:
-          - VpcCidr
-          - SubnetCidr
+          - VpcId
+          - SubnetId
       - Label:
           default: Compute
         Parameters:
@@ -42,20 +42,20 @@ Parameters:
     Description: Fully qualified name to publish, for example ai.dishantgrover.com
     AllowedPattern: '^[a-z0-9.-]+\.[a-z]{2,}$'
 
-  VpcCidr:
-    Type: String
-    Default: 10.42.0.0/16
+  VpcId:
+    Type: AWS::EC2::VPC::Id
     Description: >-
-      CIDR for the VPC this stack creates. A dedicated VPC avoids inheriting
-      private hosted zones from an existing one, which can shadow AWS service
-      domains and hijack Bedrock DNS.
-    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+      Existing VPC for the instance. A dedicated VPC would be preferable but the
+      default quota is 5 per Region; raise it via Service Quotas if you want one.
+      Check that the chosen VPC is not associated with a private hosted zone that
+      shadows an AWS service domain, since that can hijack Bedrock DNS.
 
-  SubnetCidr:
-    Type: String
-    Default: 10.42.1.0/24
-    Description: CIDR for the public subnet holding the instance.
-    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: >-
+      Public subnet in that VPC, with a route to an internet gateway. The subnet
+      should auto-assign public IPs so user data can reach the internet before
+      the Elastic IP is attached.
 
   InstanceType:
     Type: String
@@ -107,73 +107,6 @@ Conditions:
   HasPhoneNumber: !Not [!Equals [!Ref AlertPhoneNumber, '']]
 
 Resources:
-  # ---------------------------------------------------------------------------
-  # Network
-  #
-  # A dedicated VPC rather than the default one: this account has private hosted
-  # zones that shadow AWS service domains, and inheriting one could break Bedrock
-  # name resolution in ways that are painful to diagnose.
-  # ---------------------------------------------------------------------------
-  Vpc:
-    Type: AWS::EC2::VPC
-    Properties:
-      CidrBlock: !Ref VpcCidr
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: !Sub '${AWS::StackName}-vpc'
-        - Key: Application
-          Value: ai-chat
-
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-    Properties:
-      Tags:
-        - Key: Name
-          Value: !Sub '${AWS::StackName}-igw'
-
-  VpcGatewayAttachment:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref Vpc
-      InternetGatewayId: !Ref InternetGateway
-
-  PublicSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref Vpc
-      CidrBlock: !Ref SubnetCidr
-      # First AZ in the Region, chosen dynamically so the template is portable.
-      AvailabilityZone: !Select [0, !GetAZs '']
-      MapPublicIpOnLaunch: false
-      Tags:
-        - Key: Name
-          Value: !Sub '${AWS::StackName}-public'
-
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref Vpc
-      Tags:
-        - Key: Name
-          Value: !Sub '${AWS::StackName}-public'
-
-  DefaultRoute:
-    Type: AWS::EC2::Route
-    # The gateway must be attached before a route can reference it.
-    DependsOn: VpcGatewayAttachment
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  SubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet
-      RouteTableId: !Ref PublicRouteTable
-
   # ---------------------------------------------------------------------------
   # Alerting
   # ---------------------------------------------------------------------------
@@ -332,14 +265,39 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0'
 
               # Grok, through the OpenAI-compatible bedrock-mantle endpoint.
-              # Grok is in-region only, so there is no profile to allow.
-              - Sid: InvokeGrok
+              #
+              # Mantle has its own IAM namespace and does not use
+              # bedrock:InvokeModel at all. Inference is authorised as
+              # bedrock-mantle:CreateInference against a *project* resource, not
+              # against a foundation model.
+              #
+              # Consequence worth understanding: Mantle inference cannot be
+              # scoped to a single model through IAM, so this grant permits any
+              # model available on Mantle in this account, not just Grok. The
+              # server-side model registry and the per-user token budget are what
+              # actually constrain which models get called. Scoping the resource
+              # to the default project is still tighter than the "*" that the AWS
+              # documentation suggests.
+              - Sid: InvokeGrokViaMantle
                 Effect: Allow
                 Action:
-                  - bedrock:InvokeModel
-                  - bedrock:InvokeModelWithResponseStream
+                  - bedrock-mantle:CreateInference
+                  - bedrock-mantle:GetProject
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/xai.grok-4.3'
+                  - !Sub 'arn:${AWS::Partition}:bedrock-mantle:${AWS::Region}:${AWS::AccountId}:project/default'
+
+              # Discovery calls the SDK makes that are not addressable per
+              # project.
+              - Sid: MantleDiscovery
+                Effect: Allow
+                Action:
+                  # Note: the AWS documentation example spells this
+                  # "ListTagsForResources", which is not a real action. IAM
+                  # accepts unknown action names silently, so the plural form
+                  # would be a dead grant.
+                  - bedrock-mantle:ListProjects
+                  - bedrock-mantle:ListTagsForResource
+                Resource: '*'
 
               # Mantle authenticates with a short-lived bearer token derived from
               # these instance credentials rather than SigV4, which is gated by a
@@ -394,7 +352,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Public HTTP and HTTPS for the chat application
-      VpcId: !Ref Vpc
+      VpcId: !Ref VpcId
       SecurityGroupIngress:
         # Port 80 is required for the ACME HTTP-01 challenge Caddy uses to issue
         # and renew certificates; Caddy redirects browsers to HTTPS.
@@ -452,7 +410,7 @@ Resources:
       # arm64 image rather than a hard-coded AMI that ages out.
       ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}'
       IamInstanceProfile: !Ref InstanceProfile
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref SubnetId
       SecurityGroupIds:
         - !Ref SecurityGroup
       BlockDeviceMappings:
@@ -654,10 +612,6 @@ Outputs:
       SNS topic carrying budget alerts. Subscribe additional endpoints here, for
       example a Lambda that forwards to a Slack incoming webhook.
     Value: !Ref AlertTopic
-
-  VpcId:
-    Description: VPC created for the application.
-    Value: !Ref Vpc
 
   CreateUserCommand:
     Description: Command to invite a peer. They set a permanent password on first sign-in.

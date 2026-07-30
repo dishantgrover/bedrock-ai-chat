@@ -76,10 +76,19 @@ cd server
 npm run check                              # syntax check all modules
 node scripts/verify-mantle-token.js        # bearer token against live Grok
 node scripts/verify-providers.js           # stream from all three models
+
+# Full authenticated path against a deployed environment
+node scripts/verify-deployment.js https://ai.example.com USER PASSWORD [modelId]
 ```
 
 `verify-providers.js` exercises the same code path as the chat route, so an SDK
 response-shape change surfaces there rather than in the browser.
+
+`verify-deployment.js` signs in with SRP exactly as the browser does, then checks
+that an unauthenticated request is rejected with 401, streams a reply, reloads the
+thread from DynamoDB to prove both turns persisted, and deletes it again. Run it
+per model — the two endpoints authorise differently, so Claude passing does not
+mean Grok will.
 
 ## Deploying
 
@@ -92,6 +101,21 @@ response-shape change surfaces there rather than in the browser.
    The bucket is created outside the template on purpose: the bundle has to exist
    in S3 before the instance boots and runs its user data, so it cannot be a
    resource in the same stack.
+
+   Pick an existing VPC and a public subnet. The template originally created its
+   own VPC, which is preferable for isolation, but the default quota is 5 VPCs
+   per Region and hitting it fails the whole stack with
+   `ServiceLimitExceeded`. Raise the quota via Service Quotas if you want a
+   dedicated VPC. Whichever VPC you choose, confirm it is not associated with a
+   private hosted zone that shadows an AWS service domain:
+
+   ```bash
+   aws route53 list-hosted-zones --query 'HostedZones[?Config.PrivateZone].[Name,Id]' --output text
+   aws route53 get-hosted-zone --id <zone-id> --query 'VPCs[].VPCId'
+   ```
+
+   The subnet should auto-assign public IPs, since user data needs outbound
+   internet access before the Elastic IP is attached.
 
 2. Optional, for SMS alerts. While the account is in the SNS SMS sandbox, verify
    the destination number first:
@@ -165,7 +189,8 @@ response-shape change surfaces there rather than in the browser.
 Bedrock has **no spend ceiling**. A bug or a leaked password means unbounded
 token spend, so the stack layers several guardrails:
 
-- IAM allows only the three model ARNs above; no other model can be invoked.
+- IAM restricts Claude to the two model ARNs above. See the caveat below for why
+  the same is not achievable for Grok.
 - `maxTokens` is enforced server-side and never accepted from the client.
 - Per-user daily output-token cap in DynamoDB (`DailyTokenBudget`, default
   200,000), surfaced in the sidebar and returning HTTP 429 when exhausted.
@@ -190,6 +215,42 @@ credential that grants posting rights to the channel.
 
 Roughly $12-15/month for the `t4g.small` and Elastic IP, plus per-token Bedrock
 usage and negligible DynamoDB spend.
+
+## IAM: the two endpoints authorise differently
+
+This caused the only real deployment failure, so it is worth stating plainly.
+
+**`bedrock-runtime` (Claude)** uses `bedrock:InvokeModel` /
+`InvokeModelWithResponseStream` against foundation-model and inference-profile
+ARNs. Because a `us.` profile can route to `us-east-1`, `us-east-2` or
+`us-west-2`, the policy must permit the underlying model in all three. Allowing
+only the local Region works until Bedrock reroutes under load, then fails with an
+opaque AccessDenied.
+
+**`bedrock-mantle` (Grok)** does not use `bedrock:InvokeModel` at all. It has its
+own IAM namespace, and inference is authorised as:
+
+```
+bedrock-mantle:CreateInference  on  arn:aws:bedrock-mantle:<region>:<account>:project/default
+```
+
+The resource is a *project*, not a model. Two consequences:
+
+1. **Mantle inference cannot be scoped to a single model via IAM.** This grant
+   permits any Mantle model in the account, not just Grok. What actually
+   constrains model choice is the server-side registry in
+   `server/src/models.js` plus the per-user token budget. Scoping the resource to
+   the default project is still tighter than the `Resource: "*"` the AWS docs
+   suggest.
+2. Authentication is a separate action from authorisation. The bearer token is
+   gated by `bedrock-mantle:CallWithBearerToken`, restricted here to
+   `SHORT_TERM`, while the inference itself is gated by `CreateInference`. Both
+   are required.
+
+One documentation bug to be aware of: the AWS example policy lists
+`bedrock-mantle:ListTagsForResources`, which is not a real action — the correct
+name is singular, `ListTagsForResource`. IAM accepts unknown action names without
+complaint, so the plural form is a silently dead grant. cfn-lint catches it.
 
 ## Security notes
 
