@@ -6,8 +6,14 @@
  *
  *  - `bedrock`: the `bedrock-runtime` endpoint via the Converse API. Claude 4.x
  *    models have no on-demand throughput, so they must be addressed through a
- *    cross-region inference profile (the `us.` prefix). Using the bare model ID
- *    fails with a ValidationException.
+ *    cross-region inference profile. Using the bare model ID fails with a
+ *    ValidationException.
+ *
+ *    The `global.` prefix is used rather than `us.`: geo profiles bill roughly
+ *    10% above list price while global profiles bill at list, and measured time
+ *    to first token was the same or better for global. The tradeoff is that
+ *    global routes to wherever AWS has capacity, so switch back to `us.` if US
+ *    data residency is ever required.
  *  - `mantle`: the OpenAI-compatible `bedrock-mantle` endpoint. Grok is
  *    in-region only, so no prefix applies.
  *
@@ -34,7 +40,7 @@ export const MODELS = [
     label: 'Claude Sonnet 4.5',
     vendor: 'Anthropic',
     transport: 'bedrock',
-    modelId: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    modelId: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
     description: 'Balanced default. Fast and strong for everyday chat.',
     maxOutputTokens: 4096,
     emitsReasoning: false,
@@ -45,7 +51,7 @@ export const MODELS = [
     label: 'Claude Opus 4.5',
     vendor: 'Anthropic',
     transport: 'bedrock',
-    modelId: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
+    modelId: 'global.anthropic.claude-opus-4-5-20251101-v1:0',
     description: 'Most capable Claude. Use for complex reasoning and analysis.',
     maxOutputTokens: 8192,
     emitsReasoning: false,

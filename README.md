@@ -41,9 +41,28 @@ template you can read in one sitting.
 
 | Model | Endpoint | API | Identifier |
 | --- | --- | --- | --- |
-| Claude Sonnet 4.5 (default) | `bedrock-runtime` | Converse | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
-| Claude Opus 4.5 | `bedrock-runtime` | Converse | `us.anthropic.claude-opus-4-5-20251101-v1:0` |
+| Claude Sonnet 4.5 (default) | `bedrock-runtime` | Converse | `global.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| Claude Opus 4.5 | `bedrock-runtime` | Converse | `global.anthropic.claude-opus-4-5-20251101-v1:0` |
 | Grok 4.3 | `bedrock-mantle` | Chat Completions | `xai.grok-4.3` |
+
+### Global profiles, not geo profiles
+
+Claude uses the `global.` prefix rather than `us.`. Geo profiles bill roughly 10%
+above list price; global profiles bill at list. Measured on this deployment,
+`global.` was no slower — time to first token was 12% *faster* for Sonnet and
+within 1% for Opus, both inside run-to-run variance:
+
+```
+Sonnet 4.5  us     ttft median 2072ms    global  1829ms
+Opus 4.5    us     ttft median 1502ms    global  1517ms
+```
+
+So global is cheaper at equal latency. The tradeoff is that it routes wherever AWS
+has capacity, so switch back to `us.` if you need US data residency.
+
+One IAM detail: a global profile's model list includes a **Region-less**
+foundation-model ARN (`arn:aws:bedrock:::foundation-model/...`). Omit it and calls
+fail with AccessDenied even though the profile ARN is allowed.
 
 Bedrock splits inference across two endpoints and the correct identifier form is
 not guessable from the model name, so `server/src/models.js` declares each one
