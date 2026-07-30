@@ -1,0 +1,121 @@
+/* Must precede the Tailwind directives: CSS requires @import before other
+   statements, and PostCSS drops it otherwise. */
+@import 'highlight.js/styles/github-dark.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    /* dvh tracks the visual viewport, so the composer is not hidden behind the
+       iOS keyboard the way it would be with vh. */
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  body {
+    @apply bg-surface-base text-zinc-100 font-sans antialiased;
+    -webkit-font-smoothing: antialiased;
+    /* Stop iOS rubber-band scrolling of the whole page; only the message list
+       scrolls. */
+    overscroll-behavior: none;
+  }
+
+  /* Safari zooms the page when focusing an input whose font-size is under 16px.
+     Setting it explicitly avoids needing to disable pinch-zoom. */
+  textarea,
+  input,
+  select {
+    font-size: 16px;
+  }
+}
+
+@layer components {
+  .chat-scroll {
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+
+  .chat-scroll::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .chat-scroll::-webkit-scrollbar-thumb {
+    @apply bg-zinc-700 rounded-full;
+  }
+
+  /* Markdown rendering for assistant messages. */
+  .prose-chat {
+    @apply text-[15px] leading-relaxed break-words;
+  }
+
+  .prose-chat > * + * {
+    @apply mt-3;
+  }
+
+  .prose-chat h1,
+  .prose-chat h2,
+  .prose-chat h3 {
+    @apply font-semibold mt-5 mb-2;
+  }
+
+  .prose-chat h1 {
+    @apply text-lg;
+  }
+
+  .prose-chat h2 {
+    @apply text-base;
+  }
+
+  .prose-chat ul {
+    @apply list-disc pl-5 space-y-1;
+  }
+
+  .prose-chat ol {
+    @apply list-decimal pl-5 space-y-1;
+  }
+
+  .prose-chat a {
+    @apply text-sky-400 underline underline-offset-2;
+  }
+
+  .prose-chat blockquote {
+    @apply border-l-2 border-zinc-600 pl-3 text-zinc-300 italic;
+  }
+
+  /* Inline code only. Fenced blocks are rendered by CodeBlock and opt out via
+     the :not() guard. */
+  .prose-chat code:not(pre code) {
+    @apply bg-zinc-800 text-amber-200 rounded px-1.5 py-0.5 text-[13px] font-mono;
+  }
+
+  .prose-chat pre {
+    @apply bg-zinc-900 rounded-lg overflow-x-auto p-3 text-[13px] font-mono;
+  }
+
+  .prose-chat table {
+    @apply w-full text-left text-sm border-collapse;
+  }
+
+  .prose-chat th,
+  .prose-chat td {
+    @apply border border-surface-border px-2 py-1;
+  }
+
+  /* Trailing block cursor while a response streams. */
+  .streaming-caret::after {
+    content: '';
+    @apply inline-block w-[7px] h-[1.05em] align-[-0.18em] ml-0.5 bg-zinc-300;
+    animation: caret-blink 1s steps(2, start) infinite;
+  }
+
+  @keyframes caret-blink {
+    to {
+      visibility: hidden;
+    }
+  }
+}
