@@ -13,6 +13,12 @@ build/
 *.pem
 *.key
 
+# Local operator notes holding real account identifiers, deliberately kept out of
+# the public repository. See DEPLOYMENT.local.md.
+*.local.md
+*.local.json
+*.local.yaml
+
 # Logs
 *.log
 npm-debug.log*

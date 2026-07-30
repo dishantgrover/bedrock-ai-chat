@@ -27,6 +27,7 @@ Metadata:
           default: Cost controls and alerting
         Parameters:
           - MonthlyBudgetUsd
+          - BedrockCostExplorerServiceName
           - BudgetAlertEmail
           - AlertPhoneNumber
           - DailyTokenBudget
@@ -113,8 +114,18 @@ Parameters:
     Default: 50
     MinValue: 1
     Description: >-
-      Monthly cost budget. Bedrock enforces no spend ceiling of its own, so this
-      alarm is the backstop.
+      Monthly Bedrock cost budget. Bedrock enforces no spend ceiling of its own,
+      so this alarm is the backstop. Scoped to Bedrock only, so infrastructure
+      costs such as EC2 and CloudFront are not counted or alerted here.
+
+  BedrockCostExplorerServiceName:
+    Type: String
+    Default: Amazon Bedrock Service
+    Description: >-
+      Cost Explorer SERVICE dimension value used to scope the budget. Must match
+      exactly; an incorrect value makes the budget track nothing rather than
+      erroring. Verify with:
+      aws ce get-dimension-values --dimension SERVICE --time-period Start=...,End=...
 
   BudgetAlertEmail:
     Type: String
@@ -802,12 +813,24 @@ Resources:
     Type: AWS::Budgets::Budget
     Properties:
       Budget:
-        BudgetName: !Sub '${AWS::StackName}-monthly'
+        BudgetName: !Sub '${AWS::StackName}-bedrock-monthly'
         BudgetType: COST
         TimeUnit: MONTHLY
         BudgetLimit:
           Amount: !Ref MonthlyBudgetUsd
           Unit: USD
+        # Scoped to Bedrock so this budget tracks model spend only, and does not
+        # fire because of unrelated services in the same account.
+        #
+        # The value must be the Cost Explorer service name exactly. It is
+        # "Amazon Bedrock Service", not "Amazon Bedrock" -- a filter on the
+        # shorter name matches nothing and the budget silently tracks $0 forever.
+        # Confirm for your account with:
+        #   aws ce get-dimension-values --dimension SERVICE \
+        #     --time-period Start=<date>,End=<date>
+        CostFilters:
+          Service:
+            - !Ref BedrockCostExplorerServiceName
       NotificationsWithSubscribers:
         - Notification:
             NotificationType: ACTUAL

@@ -244,7 +244,18 @@ spend, so:
 - `maxTokens` enforced server-side, never accepted from the client
 - Per-user daily output-token cap in DynamoDB, surfaced in the UI, 429 when spent
 - Replay trimmed to recent turns so long threads don't grow cost without bound
-- AWS Budget alerts at 80% actual and 100% forecast, to email and SNS
+- AWS Budget alerts at 80% actual and 100% forecast, to email and SNS, **scoped to
+  Bedrock only** so it tracks model spend rather than everything else in the
+  account
+
+The budget filters on the Cost Explorer service name, which is
+`Amazon Bedrock Service` — not `Amazon Bedrock`. A filter on the shorter name
+matches nothing and the budget silently tracks $0 forever. Verify for your account
+with `aws ce get-dimension-values --dimension SERVICE`.
+
+Because the budget is Bedrock-scoped, infrastructure spend (EC2, CloudFront,
+DynamoDB, Elastic IP) is deliberately *not* covered by it. Add a second unfiltered
+budget if you want total-spend cover.
 - Closing the browser aborts the upstream call, so an abandoned tab stops billing
 
 ---
