@@ -1,0 +1,29 @@
+{
+  "name": "ai-chat-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Streaming chat API fronting Amazon Bedrock (Claude via Converse, Grok via Mantle)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node --check src/index.js && node --check src/auth.js && node --check src/models.js && node --check src/providers/claude.js && node --check src/providers/grok.js && node --check src/store.js && node --check src/routes/chat.js && node --check src/routes/conversations.js"
+  },
+  "dependencies": {
+    "@aws-crypto/sha256-js": "5.2.0",
+    "@aws-sdk/client-bedrock-runtime": "3.712.0",
+    "@aws-sdk/client-dynamodb": "3.712.0",
+    "@aws-sdk/credential-providers": "3.712.0",
+    "@aws-sdk/lib-dynamodb": "3.712.0",
+    "@smithy/protocol-http": "4.1.8",
+    "@smithy/signature-v4": "4.2.4",
+    "aws-jwt-verify": "4.0.1",
+    "express": "4.21.2",
+    "helmet": "8.0.0",
+    "openai": "4.77.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

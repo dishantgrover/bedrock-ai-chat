@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Environment and secrets. Runtime configuration is supplied by the
+# CloudFormation stack via /etc/ai-chat.env on the instance; nothing secret
+# belongs in this repository.
+.env
+.env.*
+*.pem
+*.key
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS and editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp

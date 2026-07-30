@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover is required for env(safe-area-inset-*) to report real
+      values on notched iPhones. maximum-scale is left alone so pinch-zoom keeps
+      working for accessibility; Safari's focus-zoom is prevented by using a
+      16px input font instead.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#111113" />
+    <meta name="description" content="Private AI chat over Amazon Bedrock" />
+    <!-- Lets the site behave like a standalone app when added to an iOS home screen. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>AI Chat</title>
+  </head>
+  <body class="h-full">
+    <div id="root" class="h-full"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
