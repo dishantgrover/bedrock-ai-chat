@@ -12,10 +12,10 @@
  */
 import OpenAI from 'openai';
 
-import { REGION } from '../config.js';
+import { MANTLE_REGION } from '../config.js';
 import { getMantleToken } from '../mantleToken.js';
 
-const BASE_URL = `https://bedrock-mantle.${REGION}.api.aws/openai/v1`;
+const BASE_URL = `https://bedrock-mantle.${MANTLE_REGION}.api.aws/openai/v1`;
 
 /** @type {{ token: string, client: OpenAI }|null} */
 let cachedClient = null;
@@ -27,7 +27,9 @@ let cachedClient = null;
  * @returns {Promise<OpenAI>} Configured client.
  */
 async function getClient() {
-  const token = await getMantleToken(REGION);
+  // The bearer token is signed for the same Region as the endpoint it is sent
+  // to; a token signed for another Region is rejected.
+  const token = await getMantleToken(MANTLE_REGION);
   if (!cachedClient || cachedClient.token !== token) {
     cachedClient = {
       token,

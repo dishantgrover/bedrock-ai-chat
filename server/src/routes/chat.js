@@ -12,6 +12,7 @@ import {
   DAILY_TOKEN_BUDGET,
   MAX_HISTORY_MESSAGES,
   MAX_MESSAGE_CHARS,
+  SSE_HEARTBEAT_MS,
   SYSTEM_PROMPT,
 } from '../config.js';
 import { findModel } from '../models.js';
@@ -54,6 +55,17 @@ function deriveTitle(text) {
  */
 function sendEvent(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+/**
+ * Writes an SSE comment. Comments are valid frames that carry no event, so
+ * clients ignore them, which makes them ideal keep-alive traffic.
+ *
+ * @param {import('express').Response} res Response.
+ * @param {string} note Comment text.
+ */
+function sendComment(res, note) {
+  res.write(`: ${note}\n\n`);
 }
 
 chatRouter.post('/:conversationId/messages', async (req, res) => {
@@ -117,10 +129,30 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
   });
   res.flushHeaders?.();
 
+  // Put a byte on the wire immediately. CloudFront starts its origin read
+  // timeout as soon as the request is forwarded, and a reasoning model can stay
+  // silent past that window before producing its first token.
+  sendComment(res, 'open');
+
   // Abort the upstream Bedrock call if the browser goes away, so a closed tab
   // does not keep burning tokens.
   const abortController = new AbortController();
   res.on('close', () => abortController.abort());
+
+  // Keep the connection warm during model silence. Reset on every real chunk so
+  // heartbeats only appear in genuine gaps.
+  let heartbeat = null;
+  const scheduleHeartbeat = () => {
+    clearTimeout(heartbeat);
+    heartbeat = setTimeout(() => {
+      if (!res.writableEnded) {
+        sendComment(res, 'ping');
+        scheduleHeartbeat();
+      }
+    }, SSE_HEARTBEAT_MS);
+  };
+  const stopHeartbeat = () => clearTimeout(heartbeat);
+  scheduleHeartbeat();
 
   let answer = '';
   let reasoning = '';
@@ -137,6 +169,8 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
     });
 
     for await (const event of stream) {
+      scheduleHeartbeat();
+
       if (event.type === 'text') {
         answer += event.value;
         sendEvent(res, 'delta', { text: event.value });
@@ -199,5 +233,9 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
     // Headers are already sent, so the error has to travel as an SSE event.
     sendEvent(res, 'error', { message: 'The model request failed. Please try again.' });
     res.end();
+  } finally {
+    // Without this a completed request would leave a timer holding the process
+    // awake and writing to a closed socket.
+    stopHeartbeat();
   }
 });

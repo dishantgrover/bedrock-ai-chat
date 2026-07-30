@@ -13,6 +13,24 @@ instance role.
 | Claude Opus 4.5 | `bedrock-runtime` | Converse | `us.anthropic.claude-opus-4-5-20251101-v1:0` |
 | Grok 4.3 | `bedrock-mantle` | Chat Completions | `xai.grok-4.3` |
 
+### Grok runs in us-east-2
+
+Grok is in-region only. It has no geo or global inference profile, so unlike
+Claude there is nothing to route around a Region having a bad day.
+
+us-east-1 was observed timing out on every Grok request while us-east-2 answered
+in about two seconds, so `MANTLE_REGION` pins Mantle traffic separately from the
+rest of the stack. If Grok starts failing, check whether it is regional before
+suspecting this code:
+
+```bash
+node server/scripts/check-grok-regions.js
+```
+
+Two things to remember when changing it: the bearer token must be signed for the
+same Region as the endpoint it is sent to, and the IAM `project` resource is
+Region-scoped, so the policy has to name the same Region.
+
 Bedrock splits inference across two endpoints. Claude 4.x has no on-demand
 throughput, so it must be addressed through a cross-region inference profile —
 the `us.` prefix. Grok lives on the OpenAI-compatible `bedrock-mantle` endpoint
@@ -32,15 +50,33 @@ entry in `models.js` plus a Responses-API provider.
 ## Architecture
 
 ```
-Browser  ──HTTPS──>  Caddy (TLS)  ──>  Node/Express  ──>  Bedrock Converse   (Claude)
-   │                                        │         ──>  Bedrock Mantle     (Grok)
-   │                                        └────────────>  DynamoDB          (history)
-   └──SRP auth──>  Cognito user pool
+Browser ──HTTPS──> CloudFront ──HTTPS──> Caddy ──> Node/Express ──> Bedrock Converse (Claude, us-east-1)
+   │               ai.<domain>          origin.<domain>   │      ──> Bedrock Mantle   (Grok, us-east-2)
+   │                                                      └──────>  DynamoDB         (history)
+   └──SRP auth──> Cognito user pool
 ```
 
-Single EC2 instance. Caddy obtains and renews certificates over ACME. The Node
-process serves both the built frontend and the API, and relays model output to
-the browser as Server-Sent Events.
+The instance is never exposed to the internet at large. Its security group admits
+only the AWS-managed CloudFront prefix list
+(`com.amazonaws.global.cloudfront.origin-facing`) on 443, and there is no open
+CIDR rule anywhere.
+
+That prefix list covers *every* CloudFront distribution, including other AWS
+customers', so it is not sufficient alone. CloudFront also attaches a secret
+header from Secrets Manager that the origin validates, rejecting anything else
+with a 403. Prefix list plus shared secret together are what make the restriction
+real.
+
+TLS terminates twice and is never absent: ACM at CloudFront for the viewer, and a
+Let's Encrypt certificate at Caddy for the CloudFront-to-origin hop. Cognito JWTs
+therefore never cross the public internet in the clear.
+
+Caddy validates over **DNS-01** against Route 53 rather than HTTP-01, because no
+inbound port is open to the ACME servers. This is not optional once the origin is
+closed: an HTTP-01 setup issues fine on first boot and then silently fails to
+renew about 60 days later.
+
+Grok runs in a **different Region** to everything else. See the note under Models.
 
 ## Layout
 
@@ -266,6 +302,34 @@ complaint, so the plural form is a silently dead grant. cfn-lint catches it.
 - The DynamoDB table is `Retain` on delete, so tearing down the stack does not
   destroy chat history.
 
+## CloudFront gotchas that cost real debugging time
+
+**Use `AllViewerExceptHostHeader`, not `AllViewer`.** CloudFront derives origin
+SNI from the `Host` header. `AllViewer` forwards the viewer's Host, so the origin
+is asked for a certificate for the *viewer* domain, which it does not hold. Every
+request fails the TLS handshake and surfaces as a bare 502 with nothing in the
+application log. Caddy debug logging is what reveals it:
+
+```
+tls.handshake  no certificate matching TLS ClientHello  server_name=ai.<domain>
+http.stdlib    TLS handshake error: no certificate available for 'ai.<domain>'
+```
+
+**Compression must be off on `/api/*`.** CloudFront buffers while compressing,
+which defeats `text/event-stream` and turns a streaming reply into one delayed
+blob.
+
+**Rotating the origin secret needs `OriginSecretVersionId`.** CloudFormation
+builds changesets by diffing template text, so a `{{resolve:secretsmanager:...}}`
+reference is not re-resolved when only the secret value changed — the distribution
+keeps serving the old header while the instance reads the new one, and every
+request 403s. Pass the new version ID to make the change visible.
+
+**Origin read timeout is 30s by default, 60s maximum.** A reasoning model can
+exceed that before its first token, which CloudFront treats as origin failure.
+The server writes an SSE comment immediately and heartbeats every 10 seconds
+during silence, which is what actually keeps the connection alive.
+
 ## Known gaps
 
 - **No reasoning trace for Grok.** Grok reasons internally and those tokens are
@@ -273,8 +337,18 @@ complaint, so the plural form is a silently dead grant. cfn-lint catches it.
   does. Verified against the live endpoint: 406 output tokens billed, zero
   reasoning deltas. The UI does not show a panel that would never fill.
 - **Single instance.** No redundancy; a reboot is downtime.
-- **New bundles need an instance replacement.** User data only runs at first
-  boot, so `package.sh` alone does not redeploy code.
+- **Redeploying code needs user data re-run.** CloudFormation updates `UserData`
+  in place without replacing the instance, so a new bundle is not picked up on its
+  own. Re-run it over SSM:
+
+  ```bash
+  aws ssm send-command --instance-ids <id> --document-name AWS-RunShellScript \
+    --parameters 'commands=["TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token -H \"X-aws-ec2-metadata-token-ttl-seconds: 300\")","curl -s -H \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/user-data -o /tmp/u.sh","bash /tmp/u.sh"]'
+  ```
+
+  The script is idempotent and ends with `systemctl restart`, not
+  `enable --now`, which on a running instance is a no-op and would leave the old
+  process in place.
 - **Frontend bundle is ~590 KB** (182 KB gzipped), dominated by the Cognito SDK
   and Markdown/highlighting. Fine over HTTPS with compression, but code-splitting
   would help first paint on mobile.

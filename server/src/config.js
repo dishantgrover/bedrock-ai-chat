@@ -22,6 +22,17 @@ function required(name) {
 /** AWS region hosting Bedrock, DynamoDB and Cognito. */
 export const REGION = process.env.AWS_REGION || 'us-east-1';
 
+/**
+ * Region used for the `bedrock-mantle` endpoint, separate from the main Region.
+ *
+ * Grok is in-region only, with no geo or global inference profile, so a Region
+ * having a bad day cannot be routed around automatically the way Claude's
+ * profiles can. us-east-1 was observed timing out consistently while us-east-2
+ * answered in about two seconds, so Mantle traffic is pinned separately and can
+ * be moved without relocating the rest of the stack.
+ */
+export const MANTLE_REGION = process.env.MANTLE_REGION || REGION;
+
 /** Port the HTTP server listens on. */
 export const PORT = Number(process.env.PORT || 8080);
 
@@ -48,6 +59,31 @@ export const DAILY_TOKEN_BUDGET = Number(process.env.DAILY_TOKEN_BUDGET || 20000
 
 /** Directory of built frontend assets to serve, if present. */
 export const STATIC_DIR = process.env.STATIC_DIR || '../web/dist';
+
+/**
+ * Shared secret that CloudFront attaches as a custom origin header.
+ *
+ * The security group restricts the origin to the CloudFront IP ranges, but that
+ * managed prefix list covers *every* CloudFront distribution, including other
+ * AWS customers'. Requiring a header only this distribution sends is what turns
+ * that into a real restriction.
+ *
+ * Optional so local development works without it.
+ */
+export const ORIGIN_SECRET = process.env.ORIGIN_SECRET || '';
+
+/** Header carrying the origin secret. */
+export const ORIGIN_SECRET_HEADER = 'x-origin-secret';
+
+/**
+ * Interval between server-sent heartbeats while a model is thinking.
+ *
+ * CloudFront's origin read timeout is 30 seconds by default and 60 at most, and
+ * a reasoning model can stay silent longer than that before its first token.
+ * Without traffic on the connection CloudFront treats the origin as failed.
+ * Heartbeats also stop mobile carrier proxies dropping an idle connection.
+ */
+export const SSE_HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS || 10000);
 
 /** System prompt applied to every conversation. */
 export const SYSTEM_PROMPT =

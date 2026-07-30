@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "check": "node --check src/index.js && node --check src/auth.js && node --check src/models.js && node --check src/providers/claude.js && node --check src/providers/grok.js && node --check src/store.js && node --check src/routes/chat.js && node --check src/routes/conversations.js"
+    "check": "for f in src/index.js src/auth.js src/config.js src/models.js src/mantleToken.js src/originGuard.js src/store.js src/providers/claude.js src/providers/grok.js src/routes/chat.js src/routes/conversations.js; do node --check \"$f\" || exit 1; done"
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "5.2.0",

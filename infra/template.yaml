@@ -57,6 +57,39 @@ Parameters:
       should auto-assign public IPs so user data can reach the internet before
       the Elastic IP is attached.
 
+  MantleRegion:
+    Type: String
+    Default: us-east-2
+    AllowedValues:
+      - us-east-1
+      - us-east-2
+      - us-west-2
+    Description: >-
+      Region for the bedrock-mantle endpoint that serves Grok. Kept separate from
+      the stack Region because Grok is in-region only, with no geo or global
+      inference profile to route around a Region having problems. us-east-1 was
+      observed timing out consistently while us-east-2 responded normally.
+
+  OriginSecretVersionId:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional Secrets Manager version ID for the origin secret. Leave blank to
+      use AWSCURRENT. Because CloudFormation builds a changeset by diffing the
+      template text, a dynamic reference is not re-resolved when only the secret
+      value changed -- the distribution would keep serving the old header. Pass
+      the new version ID after rotating so the change is visible to
+      CloudFormation.
+
+  CloudFrontPrefixListId:
+    Type: String
+    Default: pl-3b927c52
+    Description: >-
+      AWS-managed prefix list com.amazonaws.global.cloudfront.origin-facing for
+      this Region. Find it with:
+      aws ec2 describe-managed-prefix-lists --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing
+    AllowedPattern: '^pl-[0-9a-f]+$'
+
   InstanceType:
     Type: String
     Default: t4g.small
@@ -107,6 +140,117 @@ Conditions:
   HasPhoneNumber: !Not [!Equals [!Ref AlertPhoneNumber, '']]
 
 Resources:
+  # ---------------------------------------------------------------------------
+  # Origin shared secret
+  #
+  # The security group admits the AWS-managed CloudFront prefix list, but that
+  # covers every CloudFront distribution including other customers'. The origin
+  # additionally requires a header only this distribution sends, which is what
+  # makes the restriction meaningful.
+  # ---------------------------------------------------------------------------
+  OriginSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${AWS::StackName}-origin-secret'
+      Description: Shared secret proving a request arrived via our CloudFront distribution
+      GenerateSecretString:
+        PasswordLength: 64
+        # Only characters that are safe in an HTTP header value.
+        ExcludePunctuation: true
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Application
+          Value: ai-chat
+
+  # ---------------------------------------------------------------------------
+  # Edge
+  # ---------------------------------------------------------------------------
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      # DNS validation renews automatically for as long as the record stays in
+      # place, unlike email validation.
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+      Tags:
+        - Key: Application
+          Value: ai-chat
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AWS::StackName} chat application'
+        Aliases:
+          - !Ref DomainName
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: instance
+            # A dedicated hostname for the origin so the viewer-facing name can
+            # point at CloudFront while Caddy still holds a real certificate for
+            # the origin, keeping the hop encrypted end to end.
+            DomainName: !Sub 'origin.${DomainName}'
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+              # Raised from the 30s default because a reasoning model can be slow
+              # to produce its first token. The server also heartbeats, which is
+              # what actually keeps this from tripping.
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+            OriginCustomHeaders:
+              - HeaderName: X-Origin-Secret
+                HeaderValue: !Sub '{{resolve:secretsmanager:${OriginSecret}:SecretString:::${OriginSecretVersionId}}}'
+        DefaultCacheBehavior:
+          TargetOriginId: instance
+          ViewerProtocolPolicy: redirect-to-https
+          # index.html must never be served stale, or a deploy leaves clients on
+          # an old bundle referencing assets that no longer exist.
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          Compress: true
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: instance
+            ViewerProtocolPolicy: https-only
+            # CachingDisabled: responses are per-user and streamed.
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            # AllViewerExceptHostHeader forwards the Authorization header, which
+            # is required, while letting CloudFront set Host itself.
+            #
+            # Not AllViewer: that forwards the viewer's Host header, and
+            # CloudFront derives origin SNI from Host. The origin would then be
+            # asked for a certificate for the viewer domain, which it does not
+            # hold, and every request would fail the TLS handshake and surface as
+            # a 502.
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            # Compression must stay off here. CloudFront buffers when compressing
+            # and that defeats text/event-stream, turning a streaming reply into
+            # one delayed blob.
+            Compress: false
+          - PathPattern: /assets/*
+            TargetOriginId: instance
+            ViewerProtocolPolicy: redirect-to-https
+            # CachingOptimized is safe because Vite fingerprints asset filenames.
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            AllowedMethods: [GET, HEAD]
+            Compress: true
+      Tags:
+        - Key: Application
+          Value: ai-chat
+
   # ---------------------------------------------------------------------------
   # Alerting
   # ---------------------------------------------------------------------------
@@ -278,13 +422,15 @@ Resources:
               # actually constrain which models get called. Scoping the resource
               # to the default project is still tighter than the "*" that the AWS
               # documentation suggests.
+              # The project resource is Region-scoped, so this must name the
+              # Mantle Region rather than the stack Region.
               - Sid: InvokeGrokViaMantle
                 Effect: Allow
                 Action:
                   - bedrock-mantle:CreateInference
                   - bedrock-mantle:GetProject
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:bedrock-mantle:${AWS::Region}:${AWS::AccountId}:project/default'
+                  - !Sub 'arn:${AWS::Partition}:bedrock-mantle:${MantleRegion}:${AWS::AccountId}:project/default'
 
               # Discovery calls the SDK makes that are not addressable per
               # project.
@@ -329,6 +475,35 @@ Resources:
                   - dynamodb:Query
                 Resource: !GetAtt ChatTable.Arn
 
+        - PolicyName: acme-dns-challenge
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Caddy proves domain control by writing a TXT record, which is the
+              # only challenge type that works when no inbound port is open.
+              # Scoped to this hosted zone so the instance cannot edit other DNS.
+              - Sid: WriteAcmeChallengeRecords
+                Effect: Allow
+                Action:
+                  - route53:ChangeResourceRecordSets
+                  - route53:ListResourceRecordSets
+                Resource: !Sub 'arn:${AWS::Partition}:route53:::hostedzone/${HostedZoneId}'
+              - Sid: PollChangeStatus
+                Effect: Allow
+                Action:
+                  # These accept no resource qualifier.
+                  - route53:GetChange
+                  - route53:ListHostedZonesByName
+                Resource: '*'
+
+        - PolicyName: read-origin-secret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref OriginSecret
+
         - PolicyName: read-application-bundle
           PolicyDocument:
             Version: '2012-10-17'
@@ -351,21 +526,21 @@ Resources:
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Public HTTP and HTTPS for the chat application
+      GroupDescription: HTTPS from CloudFront only
       VpcId: !Ref VpcId
       SecurityGroupIngress:
-        # Port 80 is required for the ACME HTTP-01 challenge Caddy uses to issue
-        # and renew certificates; Caddy redirects browsers to HTTPS.
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-          Description: ACME challenge and HTTPS redirect
+        # Only CloudFront can reach the origin. Referencing the AWS-managed
+        # prefix list keeps this current as CloudFront's ranges change, with no
+        # open CIDR anywhere.
+        #
+        # Port 80 is deliberately absent. Caddy validates certificates over
+        # DNS-01 against Route 53, so no inbound ACME path is needed -- which is
+        # also the only way renewal can keep working behind a closed origin.
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          CidrIp: 0.0.0.0/0
-          Description: Application traffic
+          SourcePrefixListId: !Ref CloudFrontPrefixListId
+          Description: HTTPS from CloudFront edge locations
       # No SSH ingress: shell access is via Session Manager.
       SecurityGroupEgress:
         - IpProtocol: -1
@@ -389,11 +564,27 @@ Resources:
       AllocationId: !GetAtt ElasticIp.AllocationId
       InstanceId: !Ref Instance
 
+  # Viewer-facing name points at CloudFront, not the instance.
   DnsRecord:
     Type: AWS::Route53::RecordSet
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        # Fixed magic value identifying CloudFront as an alias target.
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+  # Origin name, resolvable so Caddy can hold a publicly trusted certificate for
+  # it and CloudFront can reach it over HTTPS. Exposure is limited by the
+  # security group and the shared secret, not by hiding this record.
+  OriginDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'origin.${DomainName}'
       Type: A
       TTL: 300
       ResourceRecords:
@@ -460,16 +651,30 @@ Resources:
 
           # Runtime configuration. These are identifiers, not secrets: AWS
           # credentials come from the instance role.
+          # Fetched at boot rather than templated in, so the secret never appears
+          # in the launch template or in CloudFormation's stored user data.
+          #
+          # Tracing is disabled around this block: with `set -x` still on, the
+          # secret would be echoed into the cloud-init log and into the output of
+          # any tool that re-runs this script.
+          set +x
+          ORIGIN_SECRET=$(aws secretsmanager get-secret-value \
+            --secret-id '${OriginSecret}' --region ${AWS::Region} \
+            --query SecretString --output text)
+
           cat > /etc/ai-chat.env <<EOF
           AWS_REGION=${AWS::Region}
+          MANTLE_REGION=${MantleRegion}
           PORT=8080
           TABLE_NAME=${ChatTable}
           COGNITO_USER_POOL_ID=${UserPool}
           COGNITO_CLIENT_ID=${UserPoolClient}
           DAILY_TOKEN_BUDGET=${DailyTokenBudget}
           STATIC_DIR=../web/dist
+          ORIGIN_SECRET=$ORIGIN_SECRET
           EOF
           chmod 640 /etc/ai-chat.env
+          set -x
 
           id -u aichat >/dev/null 2>&1 || useradd --system --shell /sbin/nologin aichat
           chown -R aichat:aichat "$APP_DIR"
@@ -501,16 +706,46 @@ Resources:
           # Caddy terminates TLS and obtains certificates automatically over
           # ACME. It is fetched as a static binary because AL2023 does not
           # package it.
-          CADDY_VERSION=2.8.4
-          curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/caddy_${!CADDY_VERSION}_linux_arm64.tar.gz" \
-            -o /tmp/caddy.tar.gz
-          tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy
-          chmod +x /usr/local/bin/caddy
+          # Caddy is downloaded with the route53 DNS module already compiled in.
+          # The stock binary cannot solve DNS-01, and `caddy add-package` would
+          # need a second network round trip and a restart at boot.
+          # Download to a temporary path first. Writing straight to the
+          # destination fails with ETXTBSY if caddy is already running, which
+          # makes re-running this script on an existing instance abort.
+          #
+          # The download service builds on demand with the requested plugin. It
+          # serves the current release, so the binary is not version-pinned.
+          curl -fsSL -o /tmp/caddy \
+            "https://caddyserver.com/api/download?os=linux&arch=arm64&p=github.com%2Fcaddy-dns%2Froute53"
+          chmod +x /tmp/caddy
+
+          # Verify the plugin is really in the binary; a plain build would fail
+          # later at certificate renewal rather than here.
+          #
+          # Written to a file instead of piped into grep on purpose: with
+          # pipefail set, `grep -q` exits on first match and closes the pipe,
+          # caddy takes SIGPIPE, and the pipeline reports failure even though the
+          # module was found.
+          HOME=/root /tmp/caddy list-modules > /tmp/caddy-modules.txt 2>/dev/null
+          grep -q '^dns\.providers\.route53$' /tmp/caddy-modules.txt \
+            || { echo 'route53 DNS module missing from Caddy build' >&2; exit 1; }
+
+          systemctl stop caddy 2>/dev/null || true
+          install -m 0755 /tmp/caddy /usr/local/bin/caddy
           id -u caddy >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --create-home --shell /sbin/nologin caddy
 
           mkdir -p /etc/caddy
           cat > /etc/caddy/Caddyfile <<EOF
-          ${DomainName} {
+          origin.${DomainName} {
+            # DNS-01 rather than HTTP-01: no inbound port is open to the ACME
+            # servers, since the security group admits CloudFront only. This is
+            # also what allows renewal to keep working.
+            tls {
+              dns route53 {
+                max_retries 10
+              }
+            }
+
             encode zstd gzip
 
             # Server-sent events must not be buffered, or the client receives the
@@ -531,6 +766,13 @@ Resources:
           Type=notify
           User=caddy
           Group=caddy
+          # systemd does not set HOME for a system user, and Caddy stores issued
+          # certificates under the data directory it derives from it.
+          Environment=HOME=/var/lib/caddy
+          Environment=XDG_DATA_HOME=/var/lib/caddy
+          # The route53 module signs with the instance role and the Go SDK wants a
+          # region even though Route 53 is global.
+          Environment=AWS_REGION=${AWS::Region}
           ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
           ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
           Restart=on-abnormal
@@ -544,8 +786,12 @@ Resources:
           EOF
 
           systemctl daemon-reload
-          systemctl enable --now ai-chat.service
-          systemctl enable --now caddy.service
+          systemctl enable ai-chat.service caddy.service
+          # restart rather than `enable --now`: on an already-running instance the
+          # latter is a no-op, so a re-run would leave the old code and the old
+          # environment file in the running process.
+          systemctl restart ai-chat.service
+          systemctl restart caddy.service
 
   # ---------------------------------------------------------------------------
   # Cost guardrail
@@ -606,6 +852,16 @@ Outputs:
   TableName:
     Description: DynamoDB table holding conversations and messages.
     Value: !Ref ChatTable
+
+  DistributionDomainName:
+    Description: CloudFront domain name backing the public URL.
+    Value: !GetAtt Distribution.DomainName
+
+  OriginDomainName:
+    Description: >-
+      Origin hostname. Reachable only from CloudFront, and only with the shared
+      secret header, so a direct request should return 403.
+    Value: !Sub 'origin.${DomainName}'
 
   AlertTopicArn:
     Description: >-

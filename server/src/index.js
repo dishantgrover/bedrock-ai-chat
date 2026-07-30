@@ -20,6 +20,7 @@ import {
   STATIC_DIR,
 } from './config.js';
 import { publicModels } from './models.js';
+import { requireOriginSecret } from './originGuard.js';
 import { chatRouter } from './routes/chat.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { getUsageToday } from './store.js';
@@ -54,10 +55,19 @@ app.use(
 
 app.use(express.json({ limit: '1mb' }));
 
-/** Liveness probe, intentionally unauthenticated and free of account detail. */
+/**
+ * Local liveness probe. Registered before the origin guard so systemd and an
+ * on-box curl can check health without the CloudFront secret. It reveals nothing
+ * about the account or its configuration.
+ */
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
+
+// Everything past this point must have come through our CloudFront
+// distribution. Applied before auth so a direct caller cannot even reach the
+// Cognito verification path.
+app.use(requireOriginSecret);
 
 /**
  * Configuration the browser needs to run the Cognito login flow. These are
