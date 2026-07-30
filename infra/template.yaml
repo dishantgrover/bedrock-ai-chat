@@ -1,0 +1,667 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Private AI chat application over Amazon Bedrock. Provisions a Cognito user pool
+  (administrator-created users only), a DynamoDB table for conversation history,
+  and an EC2 instance running the Node server behind Caddy for automatic TLS,
+  published at a Route 53 subdomain.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: DNS
+        Parameters:
+          - HostedZoneId
+          - DomainName
+      - Label:
+          default: Networking
+        Parameters:
+          - VpcCidr
+          - SubnetCidr
+      - Label:
+          default: Compute
+        Parameters:
+          - InstanceType
+          - ArtifactS3Uri
+      - Label:
+          default: Cost controls and alerting
+        Parameters:
+          - MonthlyBudgetUsd
+          - BudgetAlertEmail
+          - AlertPhoneNumber
+          - DailyTokenBudget
+
+Parameters:
+  HostedZoneId:
+    Type: String
+    Description: Route 53 hosted zone ID that owns the parent domain.
+    AllowedPattern: '^Z[A-Z0-9]+$'
+
+  DomainName:
+    Type: String
+    Description: Fully qualified name to publish, for example ai.dishantgrover.com
+    AllowedPattern: '^[a-z0-9.-]+\.[a-z]{2,}$'
+
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    Description: >-
+      CIDR for the VPC this stack creates. A dedicated VPC avoids inheriting
+      private hosted zones from an existing one, which can shadow AWS service
+      domains and hijack Bedrock DNS.
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+
+  SubnetCidr:
+    Type: String
+    Default: 10.42.1.0/24
+    Description: CIDR for the public subnet holding the instance.
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    AllowedValues:
+      - t4g.micro
+      - t4g.small
+      - t4g.medium
+    Description: Graviton instance type. The template uses an arm64 AMI.
+
+  ArtifactS3Uri:
+    Type: String
+    Description: >-
+      S3 URI of the application bundle produced by infra/package.sh, for example
+      s3://my-bucket/ai-chat/app.tar.gz
+    AllowedPattern: '^s3://[a-z0-9.-]+/.+\.tar\.gz$'
+
+  MonthlyBudgetUsd:
+    Type: Number
+    Default: 50
+    MinValue: 1
+    Description: >-
+      Monthly cost budget. Bedrock enforces no spend ceiling of its own, so this
+      alarm is the backstop.
+
+  BudgetAlertEmail:
+    Type: String
+    Description: Email address notified when the budget threshold is crossed.
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+
+  AlertPhoneNumber:
+    Type: String
+    Default: ''
+    Description: >-
+      Optional E.164 phone number for SMS alerts, for example +14155550123.
+      Leave blank to skip SMS. While the account is in the SNS SMS sandbox the
+      number must first be verified with sns create-sms-sandbox-phone-number.
+      Note that Indian (+91) destinations additionally require TRAI DLT
+      registration or messages are dropped silently.
+    AllowedPattern: '^(\+[1-9]\d{7,14})?$'
+
+  DailyTokenBudget:
+    Type: Number
+    Default: 200000
+    MinValue: 1000
+    Description: Per-user daily output-token cap enforced by the application.
+
+Conditions:
+  HasPhoneNumber: !Not [!Equals [!Ref AlertPhoneNumber, '']]
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Network
+  #
+  # A dedicated VPC rather than the default one: this account has private hosted
+  # zones that shadow AWS service domains, and inheriting one could break Bedrock
+  # name resolution in ways that are painful to diagnose.
+  # ---------------------------------------------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-vpc'
+        - Key: Application
+          Value: ai-chat
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-igw'
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref SubnetCidr
+      # First AZ in the Region, chosen dynamically so the template is portable.
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-public'
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    # The gateway must be attached before a route can reference it.
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # ---------------------------------------------------------------------------
+  # Alerting
+  # ---------------------------------------------------------------------------
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-alerts'
+      DisplayName: AIChat
+      Tags:
+        - Key: Application
+          Value: ai-chat
+
+  AlertTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlertTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # AWS Budgets publishes from its own service principal, and without
+          # this the budget silently fails to deliver to the topic.
+          - Sid: AllowBudgetsToPublish
+            Effect: Allow
+            Principal:
+              Service: budgets.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  AlertSmsSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasPhoneNumber
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: sms
+      Endpoint: !Ref AlertPhoneNumber
+
+  # ---------------------------------------------------------------------------
+  # Conversation storage
+  # ---------------------------------------------------------------------------
+  ChatTable:
+    Type: AWS::DynamoDB::Table
+    # Retained so tearing the stack down does not silently destroy chat history.
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Application
+          Value: ai-chat
+
+  # ---------------------------------------------------------------------------
+  # Authentication
+  # ---------------------------------------------------------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${AWS::StackName}-users'
+      # Self-service signup is disabled: only an administrator can create users,
+      # which is what keeps this deployment closed to invited peers.
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          TemporaryPasswordValidityDays: 7
+      UsernameConfiguration:
+        CaseSensitive: false
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+      UserPoolTags:
+        Application: ai-chat
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${AWS::StackName}-web'
+      # A public browser client must not have a secret.
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        # SRP only: the password is never transmitted to Cognito in the clear.
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+
+  # ---------------------------------------------------------------------------
+  # Instance identity and permissions
+  # ---------------------------------------------------------------------------
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Session Manager shell access, so the security group needs no SSH port.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: bedrock-invoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Claude, through the bedrock-runtime Converse API. Both the
+              # inference profile and every foundation model it can route to must
+              # be allowed.
+              - Sid: InvokeClaudeViaInferenceProfile
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-opus-4-5-20251101-v1:0'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0'
+
+              # Grok, through the OpenAI-compatible bedrock-mantle endpoint.
+              # Grok is in-region only, so there is no profile to allow.
+              - Sid: InvokeGrok
+                Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/xai.grok-4.3'
+
+              # Mantle authenticates with a short-lived bearer token derived from
+              # these instance credentials rather than SigV4, which is gated by a
+              # separate action in its own service namespace. Neither action
+              # supports resource-level scoping, so the model restrictions above
+              # are what actually limit which models can be called.
+              - Sid: UseShortTermBearerToken
+                Effect: Allow
+                Action:
+                  - bedrock-mantle:CallWithBearerToken
+                  - bedrock:CallWithBearerToken
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    # Deliberately restricted to short-term tokens: long-term API
+                    # keys are standing credentials and this app never needs one.
+                    bedrock-mantle:bearerTokenType: SHORT_TERM
+
+        - PolicyName: chat-storage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource: !GetAtt ChatTable.Arn
+
+        - PolicyName: read-application-bundle
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub
+                  - 'arn:${AWS::Partition}:s3:::${BundlePath}'
+                  - BundlePath: !Select [1, !Split ['s3://', !Ref ArtifactS3Uri]]
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  # ---------------------------------------------------------------------------
+  # Network exposure
+  # ---------------------------------------------------------------------------
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP and HTTPS for the chat application
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        # Port 80 is required for the ACME HTTP-01 challenge Caddy uses to issue
+        # and renew certificates; Caddy redirects browsers to HTTPS.
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: ACME challenge and HTTPS redirect
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Application traffic
+      # No SSH ingress: shell access is via Session Manager.
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Outbound to Bedrock, DynamoDB, Cognito and package mirrors
+      Tags:
+        - Key: Application
+          Value: ai-chat
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Application
+          Value: ai-chat
+
+  EipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref Instance
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      TTL: 300
+      ResourceRecords:
+        - !Ref ElasticIp
+
+  # ---------------------------------------------------------------------------
+  # Compute
+  # ---------------------------------------------------------------------------
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      # Resolved at deploy time so the stack always launches a current AL2023
+      # arm64 image rather than a hard-coded AMI that ages out.
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}'
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      MetadataOptions:
+        # IMDSv2 only, to prevent SSRF in the app from reaching instance
+        # credentials through the legacy metadata endpoint.
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-app'
+        - Key: Application
+          Value: ai-chat
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+
+          NODE_VERSION=22.13.0
+          APP_DIR=/opt/ai-chat
+
+          dnf -y update
+          dnf -y install tar gzip
+
+          # Install Node from the official tarball so the runtime version is
+          # pinned and does not depend on distro repo contents.
+          curl -fsSL "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.xz" \
+            -o /tmp/node.tar.xz
+          mkdir -p /opt/node
+          tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1
+          ln -sf /opt/node/bin/node /usr/local/bin/node
+          ln -sf /opt/node/bin/npm /usr/local/bin/npm
+
+          # Application bundle, built and uploaded by infra/package.sh.
+          mkdir -p "$APP_DIR"
+          aws s3 cp "${ArtifactS3Uri}" /tmp/app.tar.gz
+          tar -xzf /tmp/app.tar.gz -C "$APP_DIR"
+
+          cd "$APP_DIR/server"
+          npm ci --omit=dev
+
+          # Runtime configuration. These are identifiers, not secrets: AWS
+          # credentials come from the instance role.
+          cat > /etc/ai-chat.env <<EOF
+          AWS_REGION=${AWS::Region}
+          PORT=8080
+          TABLE_NAME=${ChatTable}
+          COGNITO_USER_POOL_ID=${UserPool}
+          COGNITO_CLIENT_ID=${UserPoolClient}
+          DAILY_TOKEN_BUDGET=${DailyTokenBudget}
+          STATIC_DIR=../web/dist
+          EOF
+          chmod 640 /etc/ai-chat.env
+
+          id -u aichat >/dev/null 2>&1 || useradd --system --shell /sbin/nologin aichat
+          chown -R aichat:aichat "$APP_DIR"
+          chown root:aichat /etc/ai-chat.env
+
+          cat > /etc/systemd/system/ai-chat.service <<'EOF'
+          [Unit]
+          Description=AI Chat application server
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=aichat
+          WorkingDirectory=/opt/ai-chat/server
+          EnvironmentFile=/etc/ai-chat.env
+          ExecStart=/usr/local/bin/node src/index.js
+          Restart=always
+          RestartSec=5
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectSystem=strict
+          ProtectHome=true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          # Caddy terminates TLS and obtains certificates automatically over
+          # ACME. It is fetched as a static binary because AL2023 does not
+          # package it.
+          CADDY_VERSION=2.8.4
+          curl -fsSL "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/caddy_${!CADDY_VERSION}_linux_arm64.tar.gz" \
+            -o /tmp/caddy.tar.gz
+          tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy
+          chmod +x /usr/local/bin/caddy
+          id -u caddy >/dev/null 2>&1 || useradd --system --home /var/lib/caddy --create-home --shell /sbin/nologin caddy
+
+          mkdir -p /etc/caddy
+          cat > /etc/caddy/Caddyfile <<EOF
+          ${DomainName} {
+            encode zstd gzip
+
+            # Server-sent events must not be buffered, or the client receives the
+            # whole reply at once instead of streaming.
+            reverse_proxy localhost:8080 {
+              flush_interval -1
+            }
+          }
+          EOF
+
+          cat > /etc/systemd/system/caddy.service <<'EOF'
+          [Unit]
+          Description=Caddy web server
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=notify
+          User=caddy
+          Group=caddy
+          ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+          ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+          Restart=on-abnormal
+          # Required to bind 80 and 443 as a non-root user.
+          AmbientCapabilities=CAP_NET_BIND_SERVICE
+          NoNewPrivileges=true
+          PrivateTmp=true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          systemctl daemon-reload
+          systemctl enable --now ai-chat.service
+          systemctl enable --now caddy.service
+
+  # ---------------------------------------------------------------------------
+  # Cost guardrail
+  # ---------------------------------------------------------------------------
+  CostBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub '${AWS::StackName}-monthly'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetAlertEmail
+            # The SNS topic is what fans out to SMS, and later to Slack if a
+            # webhook subscriber is added.
+            - SubscriptionType: SNS
+              Address: !Ref AlertTopic
+        - Notification:
+            # Forecast alerts fire before the money is spent, which is the one
+            # that actually gives you time to react.
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetAlertEmail
+            - SubscriptionType: SNS
+              Address: !Ref AlertTopic
+
+Outputs:
+  ApplicationUrl:
+    Description: Public URL of the chat application.
+    Value: !Sub 'https://${DomainName}'
+
+  PublicIp:
+    Description: Elastic IP assigned to the instance.
+    Value: !Ref ElasticIp
+
+  UserPoolId:
+    Description: Cognito user pool ID, needed to create users.
+    Value: !Ref UserPool
+
+  UserPoolClientId:
+    Description: Cognito app client ID used by the browser.
+    Value: !Ref UserPoolClient
+
+  TableName:
+    Description: DynamoDB table holding conversations and messages.
+    Value: !Ref ChatTable
+
+  AlertTopicArn:
+    Description: >-
+      SNS topic carrying budget alerts. Subscribe additional endpoints here, for
+      example a Lambda that forwards to a Slack incoming webhook.
+    Value: !Ref AlertTopic
+
+  VpcId:
+    Description: VPC created for the application.
+    Value: !Ref Vpc
+
+  CreateUserCommand:
+    Description: Command to invite a peer. They set a permanent password on first sign-in.
+    Value: !Sub >-
+      aws cognito-idp admin-create-user --user-pool-id ${UserPool}
+      --username USERNAME --temporary-password 'ChangeMe-12345'
+      --message-action SUPPRESS --region ${AWS::Region}
