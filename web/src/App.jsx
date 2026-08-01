@@ -11,6 +11,9 @@ import Message from './components/Message.jsx';
 import ModelPicker from './components/ModelPicker.jsx';
 import Sidebar from './components/Sidebar.jsx';
 
+/** localStorage key holding the desktop sidebar collapse preference. */
+const SIDEBAR_COLLAPSED_KEY = 'chorus.sidebarCollapsed';
+
 /**
  * Application shell: owns auth state, the conversation list, the open thread and
  * the streaming lifecycle.
@@ -30,6 +33,11 @@ export default function App() {
   const [streamingText, setStreamingText] = useState(null);
   const [error, setError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Desktop-only collapse, remembered across reloads. Read lazily so the first
+  // paint already reflects the stored choice rather than flashing open.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true',
+  );
   const [selectedModelId, setSelectedModelId] = useState(null);
 
   const abortRef = useRef(null);
@@ -49,6 +57,27 @@ export default function App() {
       })
       .catch((caught) => setConfigError(caught.message));
   }, []);
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed((previous) => {
+      const next = !previous;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      return next;
+    });
+  }, []);
+
+  // Cmd/Ctrl+B, the conventional shortcut for a sidebar in editors and chat apps.
+  useEffect(() => {
+    function onKeyDown(event) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        toggleSidebarCollapsed();
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [toggleSidebarCollapsed]);
 
   const handleAuthLoss = useCallback(() => {
     signOut();
@@ -257,9 +286,11 @@ export default function App() {
         conversations={conversations}
         activeId={activeId}
         open={sidebarOpen}
+        collapsed={sidebarCollapsed}
         username={me?.user?.username ?? ''}
         usage={me?.usage ?? null}
         onClose={() => setSidebarOpen(false)}
+        onToggleCollapse={toggleSidebarCollapsed}
         onNewChat={startNewChat}
         onSelect={openConversation}
         onDelete={handleDelete}
@@ -281,6 +312,21 @@ export default function App() {
               <path d="M3 6h18M3 12h18M3 18h18" />
             </svg>
           </button>
+
+          {/* The only way back once collapsed, so it has to live outside the
+              panel it reopens. */}
+          {sidebarCollapsed && (
+            <button
+              type="button"
+              onClick={toggleSidebarCollapsed}
+              aria-expanded={false}
+              aria-label="Expand sidebar"
+              title="Expand sidebar (Cmd/Ctrl+B)"
+              className="hidden rounded-lg p-1.5 text-zinc-300 transition hover:bg-zinc-800 md:inline-flex"
+            >
+              <Logo size={20} />
+            </button>
+          )}
           <div className="min-w-0 flex-1">
             <h1 className="truncate text-sm font-medium">
               {activeId

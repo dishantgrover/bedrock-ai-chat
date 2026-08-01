@@ -23,9 +23,11 @@ export default function Sidebar({
   conversations,
   activeId,
   open,
+  collapsed,
   username,
   usage,
   onClose,
+  onToggleCollapse,
   onNewChat,
   onSelect,
   onDelete,
@@ -48,12 +50,42 @@ export default function Sidebar({
       <aside
         className={[
           'fixed inset-y-0 left-0 z-40 flex w-72 flex-col border-r border-surface-border bg-surface-raised transition-transform duration-200',
-          'md:static md:z-auto md:translate-x-0',
+          // On desktop the panel is in the layout flow and collapses by width
+          // rather than sliding, so the chat column reclaims the space.
+          'md:static md:z-auto md:translate-x-0 md:overflow-hidden md:transition-[width,border] md:duration-200',
           open ? 'translate-x-0' : '-translate-x-full',
+          collapsed ? 'md:w-0 md:border-r-0' : 'md:w-72',
         ].join(' ')}
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       >
-        <div className="flex items-center gap-2 px-4 pt-4 pb-1 text-zinc-100">
+        {/* Fixed-width inner column so content keeps its shape while the parent
+            clips it, instead of reflowing as the width animates.
+
+            When collapsed, visibility:hidden rather than just clipping: a
+            zero-width overflow-hidden panel still leaves its buttons in the tab
+            order, so keyboard users would tab into invisible controls. */}
+        <div
+          aria-hidden={collapsed}
+          className={[
+            'flex h-full w-72 flex-col',
+            collapsed ? 'md:invisible' : '',
+          ].join(' ')}
+        >
+        {/* Desktop: the wordmark is the collapse control. */}
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          aria-expanded={!collapsed}
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar (Cmd/Ctrl+B)"
+          className="mx-2 mt-3 hidden items-center gap-2 rounded-lg px-2 py-1.5 text-zinc-100 transition hover:bg-zinc-800 md:flex"
+        >
+          <Logo size={20} />
+          <span className="text-base font-semibold tracking-tight">{APP_NAME}</span>
+        </button>
+
+        {/* Mobile: the drawer already has a close button, so this stays static. */}
+        <div className="flex items-center gap-2 px-4 pt-4 pb-1 text-zinc-100 md:hidden">
           <Logo size={20} />
           <span className="text-base font-semibold tracking-tight">{APP_NAME}</span>
         </div>
@@ -153,6 +185,7 @@ export default function Sidebar({
               Sign out
             </button>
           </div>
+        </div>
         </div>
       </aside>
     </>
