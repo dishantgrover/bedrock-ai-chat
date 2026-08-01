@@ -14,8 +14,11 @@
  *    to first token was the same or better for global. The tradeoff is that
  *    global routes to wherever AWS has capacity, so switch back to `us.` if US
  *    data residency is ever required.
- *  - `mantle`: the OpenAI-compatible `bedrock-mantle` endpoint. Grok is
- *    in-region only, so no prefix applies.
+ *  - `mantle`: the OpenAI-compatible `bedrock-mantle` endpoint, Chat Completions.
+ *    Grok is in-region only, so no prefix applies.
+ *  - `mantle-responses`: the same endpoint via the Responses API, which can carry
+ *    reasoning between turns. Chat Completions cannot, so a model reached that way
+ *    re-derives its thinking from its own conclusions each turn.
  *
  * Model IDs are taken from the AWS model cards rather than inferred.
  */
@@ -25,7 +28,8 @@
  * @property {string} id Stable key used by the client and stored on conversations.
  * @property {string} label Display name in the model picker.
  * @property {string} vendor Provider shown in the UI.
- * @property {'bedrock'|'mantle'} transport Which endpoint and SDK to use.
+ * @property {'bedrock'|'mantle'|'mantle-responses'} transport Which endpoint and API to use.
+ * @property {'none'|'low'|'medium'|'high'} [reasoningEffort] Effort for reasoning transports.
  * @property {string} modelId Identifier sent to Bedrock.
  * @property {string} description One-line guidance shown in the picker.
  * @property {number} maxOutputTokens Output cap enforced server-side.
@@ -55,6 +59,19 @@ export const MODELS = [
     // fills.
     emitsReasoning: false,
     default: true,
+  },
+  {
+    id: 'grok-4-3-reasoning',
+    label: 'Grok 4.3 (reasoning)',
+    vendor: 'xAI',
+    transport: 'mantle-responses',
+    modelId: 'xai.grok-4.3',
+    description: 'Same model, but keeps its own reasoning across turns. Better for long arguments.',
+    maxOutputTokens: 8192,
+    reasoningEffort: 'low',
+    // The reasoning is returned encrypted with no readable summary, verified
+    // against the live endpoint, so there is still nothing to display.
+    emitsReasoning: false,
   },
   {
     id: 'claude-sonnet-4-5',

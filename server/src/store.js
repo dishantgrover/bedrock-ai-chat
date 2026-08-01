@@ -160,6 +160,7 @@ export async function listMessages(conversationId) {
     role: item.role,
     content: item.content,
     reasoning: item.reasoning,
+    reasoningItem: item.reasoningItem,
     createdAt: item.createdAt,
   }));
 }
@@ -183,6 +184,7 @@ export async function appendMessage({
   role,
   content,
   reasoning,
+  reasoningItem,
   inputTokens = 0,
   outputTokens = 0,
 }) {
@@ -199,6 +201,9 @@ export async function appendMessage({
         role,
         content,
         reasoning,
+        // Opaque blob replayed to the model so it regains its own prior
+        // reasoning. Stored verbatim because the service validates its shape.
+        reasoningItem,
         inputTokens,
         outputTokens,
         createdAt: now,

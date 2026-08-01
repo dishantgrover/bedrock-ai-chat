@@ -18,6 +18,7 @@ import {
 import { findModel } from '../models.js';
 import { streamClaude } from '../providers/claude.js';
 import { streamGrok } from '../providers/grok.js';
+import { streamGrokReasoning } from '../providers/grokReasoning.js';
 import {
   addUsage,
   appendMessage,
@@ -33,6 +34,7 @@ export const chatRouter = Router();
 const STREAMERS = {
   bedrock: streamClaude,
   mantle: streamGrok,
+  'mantle-responses': streamGrokReasoning,
 };
 
 /**
@@ -103,9 +105,13 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
   const isFirstExchange = history.length === 0;
 
   // Trim to the most recent turns so cost does not grow without bound.
+  //
+  // `reasoningItem` is carried through for transports that can replay it. The
+  // others map role and content explicitly, so the extra field is ignored rather
+  // than leaking into their request bodies.
   const replay = [...history, { role: 'user', content }]
     .slice(-MAX_HISTORY_MESSAGES)
-    .map(({ role, content: text }) => ({ role, content: text }));
+    .map(({ role, content: text, reasoningItem }) => ({ role, content: text, reasoningItem }));
 
   res.status(200).set({
     'Content-Type': 'text/event-stream',
@@ -142,6 +148,7 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
 
   let answer = '';
   let reasoning = '';
+  let reasoningItem;
   let inputTokens = 0;
   let outputTokens = 0;
   let persisted = false;
@@ -169,6 +176,7 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
       role: 'assistant',
       content: answer,
       reasoning: reasoning || undefined,
+      reasoningItem,
       inputTokens,
       outputTokens,
     });
@@ -201,6 +209,10 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
       } else if (event.type === 'reasoning') {
         reasoning += event.value;
         sendEvent(res, 'reasoning', { text: event.value });
+      } else if (event.type === 'reasoningItem') {
+        // Kept server-side only. It is an opaque encrypted blob with no display
+        // value, and sending it to the browser would just inflate the stream.
+        reasoningItem = event.value;
       } else if (event.type === 'usage') {
         inputTokens = event.inputTokens;
         outputTokens = event.outputTokens;

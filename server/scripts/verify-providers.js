@@ -6,13 +6,20 @@
  *
  * Usage: node scripts/verify-providers.js
  */
-import { findModel } from '../src/models.js';
+import { MODELS, findModel } from '../src/models.js';
 import { streamClaude } from '../src/providers/claude.js';
 import { streamGrok } from '../src/providers/grok.js';
+import { streamGrokReasoning } from '../src/providers/grokReasoning.js';
 
-const STREAMERS = { bedrock: streamClaude, mantle: streamGrok };
+const STREAMERS = {
+  bedrock: streamClaude,
+  mantle: streamGrok,
+  'mantle-responses': streamGrokReasoning,
+};
 
-const cases = ['claude-sonnet-4-5', 'claude-opus-4-5', 'grok-4-3'];
+// Derived from the registry so a newly added model is covered without editing
+// this list and forgetting.
+const cases = MODELS.map((model) => model.id);
 let failures = 0;
 
 for (const id of cases) {
