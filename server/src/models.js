@@ -33,18 +33,38 @@
  * @property {boolean} [default] Marks the default selection.
  */
 
-/** @type {ModelDefinition[]} */
+/**
+ * Order here is the order shown in the picker, and the entry flagged `default`
+ * is preselected for a new conversation.
+ *
+ * @type {ModelDefinition[]}
+ */
 export const MODELS = [
+  {
+    id: 'grok-4-3',
+    label: 'Grok 4.3',
+    vendor: 'xAI',
+    transport: 'mantle',
+    modelId: 'xai.grok-4.3',
+    description: 'Default. Long context, strong at tool use and long documents.',
+    maxOutputTokens: 8192,
+    // Grok reasons internally and those tokens are billed, but the Chat
+    // Completions API does not return the trace -- only the Responses API does.
+    // Verified against the live endpoint: 406 output tokens billed, zero
+    // reasoning deltas. Left false so the UI does not promise a panel that never
+    // fills.
+    emitsReasoning: false,
+    default: true,
+  },
   {
     id: 'claude-sonnet-4-5',
     label: 'Claude Sonnet 4.5',
     vendor: 'Anthropic',
     transport: 'bedrock',
     modelId: 'global.anthropic.claude-sonnet-4-5-20250929-v1:0',
-    description: 'Balanced default. Fast and strong for everyday chat.',
+    description: 'Balanced and quick for everyday chat.',
     maxOutputTokens: 4096,
     emitsReasoning: false,
-    default: true,
   },
   {
     id: 'claude-opus-4-5',
@@ -54,21 +74,6 @@ export const MODELS = [
     modelId: 'global.anthropic.claude-opus-4-5-20251101-v1:0',
     description: 'Most capable Claude. Use for complex reasoning and analysis.',
     maxOutputTokens: 8192,
-    emitsReasoning: false,
-  },
-  {
-    id: 'grok-4-3',
-    label: 'Grok 4.3',
-    vendor: 'xAI',
-    transport: 'mantle',
-    modelId: 'xai.grok-4.3',
-    description: 'Long context. Strong at tool use and long documents.',
-    maxOutputTokens: 8192,
-    // Grok reasons internally and those tokens are billed, but the Chat
-    // Completions API does not return the trace -- only the Responses API does.
-    // Verified against the live endpoint: 406 output tokens billed, zero
-    // reasoning deltas emitted. Left false so the UI does not promise a panel
-    // that never fills.
     emitsReasoning: false,
   },
 ];
