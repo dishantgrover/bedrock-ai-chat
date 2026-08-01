@@ -100,21 +100,7 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
   }
 
   const history = await listMessages(conversationId);
-
-  await appendMessage({
-    userId: req.user.id,
-    conversation,
-    role: 'user',
-    content,
-  });
-
-  if (history.length === 0) {
-    await renameConversation({
-      userId: req.user.id,
-      conversation,
-      title: deriveTitle(content),
-    });
-  }
+  const isFirstExchange = history.length === 0;
 
   // Trim to the most recent turns so cost does not grow without bound.
   const replay = [...history, { role: 'user', content }]
@@ -158,6 +144,44 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
   let reasoning = '';
   let inputTokens = 0;
   let outputTokens = 0;
+  let persisted = false;
+
+  /**
+   * Writes the turn to storage: the user's message, then the reply.
+   *
+   * Deferred until the model has produced something, so a failed turn leaves no
+   * trace. Persisting the question up front meant every retry stored another
+   * copy of it with no answer, and those copies were then replayed to the model
+   * on later turns.
+   *
+   * Guarded by a flag because both the success and abort paths call it.
+   */
+  const persistTurn = async () => {
+    if (persisted) {
+      return;
+    }
+    persisted = true;
+
+    await appendMessage({ userId: req.user.id, conversation, role: 'user', content });
+    await appendMessage({
+      userId: req.user.id,
+      conversation,
+      role: 'assistant',
+      content: answer,
+      reasoning: reasoning || undefined,
+      inputTokens,
+      outputTokens,
+    });
+
+    // Titled from the question, so this has to wait for the question to exist.
+    if (isFirstExchange) {
+      await renameConversation({
+        userId: req.user.id,
+        conversation,
+        title: deriveTitle(content),
+      });
+    }
+  };
 
   try {
     const streamer = STREAMERS[model.transport];
@@ -184,15 +208,7 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
     }
 
     if (answer.length > 0 || reasoning.length > 0) {
-      await appendMessage({
-        userId: req.user.id,
-        conversation,
-        role: 'assistant',
-        content: answer,
-        reasoning: reasoning || undefined,
-        inputTokens,
-        outputTokens,
-      });
+      await persistTurn();
     }
 
     if (outputTokens > 0) {
@@ -204,21 +220,20 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
       title: conversation.title,
       inputTokens,
       outputTokens,
+      // Tells the client whether the turn survived, so it can drop an
+      // optimistically rendered message that was never stored.
+      persisted,
     });
     res.end();
   } catch (error) {
     if (abortController.signal.aborted) {
-      // Client disconnected; persist whatever was produced before giving up.
+      // Stop button or a closed tab. Keep a partial reply, since the user saw it
+      // and the tokens are already paid for.
       if (answer.length > 0) {
-        await appendMessage({
-          userId: req.user.id,
-          conversation,
-          role: 'assistant',
-          content: answer,
-          reasoning: reasoning || undefined,
-          inputTokens,
-          outputTokens,
-        });
+        await persistTurn();
+        if (outputTokens > 0) {
+          await addUsage(req.user.id, outputTokens);
+        }
       }
       res.end();
       return;
@@ -227,11 +242,24 @@ chatRouter.post('/:conversationId/messages', async (req, res) => {
     console.error('chat stream failed', {
       conversationId,
       modelId: model.id,
+      persisted,
       message: error?.message,
     });
 
+    // A partial reply is worth keeping; a failure with nothing produced leaves
+    // the conversation exactly as it was.
+    if (answer.length > 0) {
+      await persistTurn();
+      if (outputTokens > 0) {
+        await addUsage(req.user.id, outputTokens);
+      }
+    }
+
     // Headers are already sent, so the error has to travel as an SSE event.
-    sendEvent(res, 'error', { message: 'The model request failed. Please try again.' });
+    sendEvent(res, 'error', {
+      message: 'The model request failed. Please try again.',
+      persisted,
+    });
     res.end();
   } finally {
     // Without this a completed request would leave a timer holding the process

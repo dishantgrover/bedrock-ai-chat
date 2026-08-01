@@ -171,6 +171,9 @@ export default function App() {
     abortRef.current = controller;
 
     let accumulated = '';
+    // The server only stores a turn once the model produced something, so a
+    // failed turn must not leave a message on screen that a refresh would erase.
+    let turnPersisted = true;
 
     try {
       await api.streamMessage({
@@ -181,7 +184,13 @@ export default function App() {
           accumulated += text;
           setStreamingText(accumulated);
         },
-        onError: (message) => setError(message),
+        onDone: (payload) => {
+          turnPersisted = payload?.persisted !== false;
+        },
+        onError: (message) => {
+          setError(message);
+          turnPersisted = false;
+        },
       });
     } catch (caught) {
       if (caught instanceof AuthExpiredError) {
@@ -191,13 +200,21 @@ export default function App() {
       // An abort is the user pressing stop, not a failure.
       if (caught.name !== 'AbortError') {
         setError(caught.message);
+        turnPersisted = false;
       }
     } finally {
       abortRef.current = null;
       setStreamingText(null);
+
       if (accumulated) {
         setMessages((previous) => [...previous, { role: 'assistant', content: accumulated }]);
+      } else if (!turnPersisted) {
+        // Nothing was stored, so roll the optimistic message back off screen and
+        // hand the text back to the composer rather than losing what was typed.
+        setMessages((previous) => previous.slice(0, -1));
+        setDraft((current) => current || content);
       }
+
       refreshSidebar();
     }
   }
