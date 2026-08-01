@@ -13,7 +13,7 @@
 import OpenAI from 'openai';
 
 import { MANTLE_REGION } from '../config.js';
-import { getMantleToken } from '../mantleToken.js';
+import { getMantleToken, invalidateMantleToken } from '../mantleToken.js';
 
 const BASE_URL = `https://bedrock-mantle.${MANTLE_REGION}.api.aws/openai/v1`;
 
@@ -55,21 +55,41 @@ async function getClient() {
  * @returns {AsyncGenerator<Object>} Normalised stream events.
  */
 export async function* streamGrok({ model, messages, systemPrompt, signal }) {
-  const client = await getClient();
+  const body = {
+    model: model.modelId,
+    messages: [
+      ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+      ...messages.map((message) => ({ role: message.role, content: message.content })),
+    ],
+    max_completion_tokens: model.maxOutputTokens,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
 
-  const stream = await client.chat.completions.create(
-    {
-      model: model.modelId,
-      messages: [
-        ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-        ...messages.map((message) => ({ role: message.role, content: message.content })),
-      ],
-      max_completion_tokens: model.maxOutputTokens,
-      stream: true,
-      stream_options: { include_usage: true },
-    },
-    { signal },
-  );
+  /**
+   * Opens the stream, retrying once on an authentication failure.
+   *
+   * The bearer token is a presigned URL bounded by the signing credentials, so a
+   * credential rotation can invalidate it earlier than the cached expiry
+   * predicts. Discarding the cached token and re-signing recovers immediately;
+   * without this the failure would persist for the life of the cache entry.
+   */
+  const openStream = async () => {
+    try {
+      const client = await getClient();
+      return await client.chat.completions.create(body, { signal });
+    } catch (error) {
+      if (error?.status !== 401) {
+        throw error;
+      }
+      invalidateMantleToken(MANTLE_REGION);
+      cachedClient = null;
+      const client = await getClient();
+      return client.chat.completions.create(body, { signal });
+    }
+  };
+
+  const stream = await openStream();
 
   for await (const chunk of stream) {
     const delta = chunk.choices?.[0]?.delta;
