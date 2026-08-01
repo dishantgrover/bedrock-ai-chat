@@ -398,6 +398,13 @@ Resources:
       ManagedPolicyArns:
         # Session Manager shell access, so the security group needs no SSH port.
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      # Tagged explicitly: CloudFormation does not propagate stack-level tags to
+      # IAM resources, so this role would otherwise be untracked.
+      Tags:
+        - Key: project
+          Value: aichatbot
+        - Key: auto-delete
+          Value: 'no'
       Policies:
         - PolicyName: bedrock-invoke
           PolicyDocument:
@@ -634,6 +641,15 @@ Resources:
         # credentials through the legacy metadata endpoint.
         HttpTokens: required
         HttpPutResponseHopLimit: 1
+      # Blocks TerminateInstances outright. Tags only deter tooling that chooses
+      # to read them; this is an actual refusal from the EC2 API.
+      #
+      # Note: some managed accounts prevent this being set so their cleanup
+      # tooling can still reclaim instances. ModifyInstanceAttribute returns
+      # success and the attribute stays false. Verify rather than assume:
+      #   aws ec2 describe-instance-attribute --instance-id <id> \
+      #     --attribute disableApiTermination
+      DisableApiTermination: true
       Tags:
         - Key: Name
           Value: !Sub '${AWS::StackName}-app'
