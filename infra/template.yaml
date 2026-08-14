@@ -109,9 +109,18 @@ Parameters:
       s3://my-bucket/ai-chat/app.tar.gz
     AllowedPattern: '^s3://[a-z0-9.-]+/.+\.tar\.gz$'
 
+  AccountMonthlyBudgetUsd:
+    Type: Number
+    Default: 3000
+    MinValue: 1
+    Description: >-
+      Unfiltered monthly budget covering all AWS spend, not just Bedrock. The
+      Bedrock-scoped budget below deliberately ignores EC2, CloudFront, DynamoDB
+      and everything else, so without this nothing watches the account total.
+
   MonthlyBudgetUsd:
     Type: Number
-    Default: 50
+    Default: 150
     MinValue: 1
     Description: >-
       Monthly Bedrock cost budget. Bedrock enforces no spend ceiling of its own,
@@ -371,6 +380,31 @@ Resources:
       ExplicitAuthFlows:
         # SRP only: the password is never transmitted to Cognito in the clear.
         - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+
+  # Separate client for the Obsidian plugin. SRP needs a browser-grade crypto
+  # stack that an Obsidian plugin cannot reasonably carry, especially on mobile,
+  # so this client permits USER_PASSWORD_AUTH instead. It is deliberately a second
+  # client rather than an extra flow on the web one: the browser stays SRP-only,
+  # and this client can be revoked or rotated on its own if a vault leaks.
+  # The password still only ever travels to Cognito over TLS.
+  PluginUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${AWS::StackName}-obsidian'
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
       AccessTokenValidity: 1
       IdTokenValidity: 1
@@ -703,6 +737,7 @@ Resources:
           TABLE_NAME=${ChatTable}
           COGNITO_USER_POOL_ID=${UserPool}
           COGNITO_CLIENT_ID=${UserPoolClient}
+          COGNITO_PLUGIN_CLIENT_ID=${PluginUserPoolClient}
           DAILY_TOKEN_BUDGET=${DailyTokenBudget}
           STATIC_DIR=../web/dist
           ORIGIN_SECRET=$ORIGIN_SECRET
@@ -828,8 +863,45 @@ Resources:
           systemctl restart caddy.service
 
   # ---------------------------------------------------------------------------
-  # Cost guardrail
+  # Cost guardrails
+  #
+  # Two budgets on purpose. The Bedrock-scoped one below is narrow enough to be
+  # meaningful for this application, but that narrowness means it cannot see
+  # infrastructure spend. An account-wide budget covers the rest.
   # ---------------------------------------------------------------------------
+  AccountTotalBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub '${AWS::StackName}-account-total-monthly'
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref AccountMonthlyBudgetUsd
+          Unit: USD
+        # No CostFilters: this is deliberately every service in the account.
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetAlertEmail
+            - SubscriptionType: SNS
+              Address: !Ref AlertTopic
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetAlertEmail
+            - SubscriptionType: SNS
+              Address: !Ref AlertTopic
+
   CostBudget:
     Type: AWS::Budgets::Budget
     Properties:
@@ -894,6 +966,10 @@ Outputs:
   UserPoolClientId:
     Description: Cognito app client ID used by the browser.
     Value: !Ref UserPoolClient
+
+  PluginUserPoolClientId:
+    Description: Cognito app client ID used by the Obsidian plugin.
+    Value: !Ref PluginUserPoolClient
 
   TableName:
     Description: DynamoDB table holding conversations and messages.

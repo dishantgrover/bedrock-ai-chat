@@ -46,6 +46,34 @@ export const COGNITO_USER_POOL_ID = required('COGNITO_USER_POOL_ID');
 export const COGNITO_CLIENT_ID = required('COGNITO_CLIENT_ID');
 
 /**
+ * Second app client used by the Obsidian plugin. Optional, because the web app
+ * works without it. Tokens are pinned to a client ID, so the plugin's client has
+ * to be named here explicitly or its tokens are rejected.
+ */
+export const COGNITO_PLUGIN_CLIENT_ID = process.env.COGNITO_PLUGIN_CLIENT_ID || '';
+
+/**
+ * Origins permitted to call the API cross-origin.
+ *
+ * The Obsidian plugin needs this to stream. Obsidian's own HTTP helper bypasses
+ * CORS but buffers the whole response, so streaming requires a real `fetch`,
+ * which is subject to the browser's origin checks. These are the origins Obsidian
+ * runs under: `app://obsidian.md` on desktop, and the two localhost forms used by
+ * the mobile shells.
+ *
+ * Credentials are deliberately not allowed. Auth is a bearer token rather than a
+ * cookie, so there is nothing for a hostile page to replay, and omitting
+ * `Access-Control-Allow-Credentials` keeps it that way.
+ */
+export const CORS_ALLOWED_ORIGINS = (
+  process.env.CORS_ALLOWED_ORIGINS ||
+  'app://obsidian.md,capacitor://localhost,http://localhost'
+)
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+/**
  * Maximum number of prior messages replayed to the model. Caps the cost of a
  * long conversation, since every turn resends the history.
  */

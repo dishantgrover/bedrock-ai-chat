@@ -7,12 +7,21 @@
  */
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
 
-import { COGNITO_CLIENT_ID, COGNITO_USER_POOL_ID } from './config.js';
+import {
+  COGNITO_CLIENT_ID,
+  COGNITO_PLUGIN_CLIENT_ID,
+  COGNITO_USER_POOL_ID,
+} from './config.js';
+
+// The pool has two app clients: the browser (SRP only) and the Obsidian plugin
+// (password auth). A token names the client that minted it, so both are listed
+// rather than disabling the check. Passing an array keeps the claim validated.
+const allowedClientIds = [COGNITO_CLIENT_ID, COGNITO_PLUGIN_CLIENT_ID].filter(Boolean);
 
 const verifier = CognitoJwtVerifier.create({
   userPoolId: COGNITO_USER_POOL_ID,
   tokenUse: 'access',
-  clientId: COGNITO_CLIENT_ID,
+  clientId: allowedClientIds,
 });
 
 /**

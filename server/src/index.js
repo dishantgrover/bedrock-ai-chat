@@ -14,6 +14,7 @@ import { requireAuth } from './auth.js';
 import {
   COGNITO_CLIENT_ID,
   COGNITO_USER_POOL_ID,
+  CORS_ALLOWED_ORIGINS,
   DAILY_TOKEN_BUDGET,
   PORT,
   REGION,
@@ -68,6 +69,36 @@ app.get('/api/health', (_req, res) => {
 // distribution. Applied before auth so a direct caller cannot even reach the
 // Cognito verification path.
 app.use(requireOriginSecret);
+
+/**
+ * Cross-origin access for the Obsidian plugin.
+ *
+ * Sits after the origin guard, since a preflight still arrives through
+ * CloudFront and therefore carries the shared secret, but before `requireAuth`,
+ * because a preflight carries no Authorization header and must not be rejected as
+ * unauthenticated.
+ */
+const allowedOrigins = new Set(CORS_ALLOWED_ORIGINS);
+
+app.use('/api', (req, res, next) => {
+  const { origin } = req.headers;
+
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    // The response varies by origin, so any shared cache must key on it.
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Max-Age', '86400');
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+
+  next();
+});
 
 /**
  * Configuration the browser needs to run the Cognito login flow. These are
