@@ -37,8 +37,8 @@ template you can read in one sitting.
 - **Per-turn token usage** with an indicative cost, shown on hover
 - **Cost guardrails** — per-user daily token caps and budget alerts, because
   Bedrock enforces no spend ceiling of its own
-- **An [Obsidian plugin](#obsidian-plugin)** that chats against this API from inside
-  a vault, and can attach the open note as context
+- **An [Obsidian plugin](#obsidian-plugin)** with a chat per note, which can attach
+  the open note or a selection as context
 
 ## Models
 

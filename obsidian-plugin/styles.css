@@ -5,6 +5,30 @@
   gap: var(--size-4-2);
 }
 
+/* Names the open chat, so it is never ambiguous which note you are talking about. */
+.chorus-scope {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-2-2);
+  padding: var(--size-2-2) var(--size-4-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.chorus-scope-name {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chorus-scope-hint {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
 .chorus-transcript {
   flex: 1;
   overflow-y: auto;

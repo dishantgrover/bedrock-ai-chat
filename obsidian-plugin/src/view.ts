@@ -1,4 +1,11 @@
-import { ItemView, MarkdownRenderer, Notice, setIcon, type WorkspaceLeaf } from 'obsidian';
+import {
+  ItemView,
+  MarkdownRenderer,
+  Notice,
+  setIcon,
+  type TFile,
+  type WorkspaceLeaf,
+} from 'obsidian';
 
 import { approximateTokens, formatWithContext, type NoteAttachment } from './noteContext';
 import { createBackend, pricingFor } from './providers';
@@ -31,8 +38,16 @@ export class ChorusView extends ItemView {
   private sendButtonEl!: HTMLButtonElement;
   private statusEl!: HTMLElement;
   private attachRowEl!: HTMLElement;
+  private scopeEl!: HTMLElement;
   private emptyEl: HTMLElement | null = null;
   private busy = false;
+  /**
+   * A note change that arrived mid-send.
+   *
+   * `undefined` means nothing is queued; `null` means the vault chat. Swapping
+   * transcripts while a reply is streaming would attach it to the wrong chat.
+   */
+  private pendingSwitch: TFile | null | undefined;
   /** Cleared after each send, so a note is never resent without asking. */
   private attachment: NoteAttachment | null = null;
 
@@ -60,6 +75,7 @@ export class ChorusView extends ItemView {
     root.empty();
     root.addClass('chorus-view');
 
+    this.scopeEl = root.createDiv({ cls: 'chorus-scope' });
     this.transcriptEl = root.createDiv({ cls: 'chorus-transcript' });
 
     const composer = root.createDiv({ cls: 'chorus-composer' });
@@ -90,15 +106,81 @@ export class ChorusView extends ItemView {
       }
     });
 
-    // Which note is attachable changes as the user moves around the vault.
-    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.renderAttachRow()));
+    // Which note is attachable, and which chat is shown, both change as the user
+    // moves around the vault.
+    this.registerEvent(
+      this.app.workspace.on('active-leaf-change', () => {
+        this.renderAttachRow();
+        void this.syncScope();
+      }),
+    );
+    this.registerEvent(this.app.workspace.on('file-open', () => void this.syncScope()));
     // Obsidian raises no event for a selection changing, so the row is refreshed
     // when the user comes back to the composer, which is the moment before they
     // would reach for "Attach selection".
     this.inputEl.addEventListener('focus', () => this.renderAttachRow());
 
+    await this.syncScope();
     await this.renderTranscript();
+    this.renderScope();
     this.setStatus(this.describeBackend());
+  }
+
+  /**
+   * Points the panel at whichever chat the active note owns.
+   *
+   * Does nothing when already on the right chat, so the workspace events that
+   * fire for unrelated reasons are cheap.
+   */
+  private async syncScope(): Promise<void> {
+    if (this.plugin.settings.chatScope !== 'note') {
+      if (this.plugin.activeFile !== null) await this.switchTo(null);
+      return;
+    }
+
+    const file = this.plugin.noteContext.file();
+    if ((file?.path ?? null) === (this.plugin.activeFile?.path ?? null)) return;
+
+    await this.switchTo(file);
+  }
+
+  /** Swaps the shown transcript, deferring if a reply is in flight. */
+  private async switchTo(file: TFile | null): Promise<void> {
+    if (this.busy) {
+      this.pendingSwitch = file;
+      return;
+    }
+
+    await this.plugin.switchTo(file);
+    await this.renderTranscript();
+    this.renderScope();
+  }
+
+  /** Names the chat on screen, so it is never ambiguous which one is open. */
+  private renderScope(): void {
+    this.scopeEl.empty();
+
+    if (this.plugin.settings.chatScope !== 'note') {
+      this.scopeEl.createSpan({ cls: 'chorus-scope-name', text: 'Vault chat' });
+      return;
+    }
+
+    const file = this.plugin.activeFile;
+    if (!file) {
+      this.scopeEl.createSpan({ cls: 'chorus-scope-name', text: 'Vault chat' });
+      this.scopeEl.createSpan({
+        cls: 'chorus-scope-hint',
+        text: 'no note open',
+      });
+      return;
+    }
+
+    this.scopeEl.createSpan({ cls: 'chorus-scope-name', text: file.basename });
+    if (!this.plugin.activeChatId) {
+      // Nothing has been written to the note yet, and nothing will be until a
+      // reply arrives.
+      this.scopeEl.createSpan({ cls: 'chorus-scope-hint', text: 'new chat' });
+    }
   }
 
   /**
@@ -186,7 +268,7 @@ export class ChorusView extends ItemView {
     this.transcriptEl.empty();
     this.emptyEl = null;
 
-    const messages = this.plugin.history.messages;
+    const messages = this.plugin.transcript.messages;
     if (messages.length === 0) {
       this.showEmptyState();
       return;
@@ -199,10 +281,17 @@ export class ChorusView extends ItemView {
   }
 
   private showEmptyState(): void {
-    this.emptyEl = this.transcriptEl.createDiv({
-      cls: 'chorus-empty',
-      text: 'No messages yet. This vault keeps a single ongoing chat.',
-    });
+    const noteScoped = this.plugin.settings.chatScope === 'note';
+    const file = this.plugin.activeFile;
+
+    const text =
+      noteScoped && file
+        ? `No messages yet. Sending one starts a chat for "${file.basename}".`
+        : noteScoped
+          ? 'No messages yet. Open a note to start a chat for it, or ask here for the vault chat.'
+          : 'No messages yet. This vault keeps a single ongoing chat.';
+
+    this.emptyEl = this.transcriptEl.createDiv({ cls: 'chorus-empty', text });
   }
 
   /** Appends one turn without touching the rest of the transcript. */
@@ -400,7 +489,7 @@ export class ChorusView extends ItemView {
           }
         : {}),
     };
-    await this.plugin.history.append(userMessage);
+    await this.plugin.transcript.append(userMessage);
     const userTurnEl = await this.appendTurn(userMessage);
     this.setStatus('Waiting for the model...');
 
@@ -414,7 +503,7 @@ export class ChorusView extends ItemView {
       const result = await backend.complete({
         // The stored history carries the question only; the outgoing copy of the
         // latest turn carries the attached note too.
-        messages: this.plugin.history.messages.map(({ role, content: text }, index, all) => ({
+        messages: this.plugin.transcript.messages.map(({ role, content: text }, index, all) => ({
           role,
           content: index === all.length - 1 ? sentContent : text,
         })),
@@ -439,22 +528,35 @@ export class ChorusView extends ItemView {
         outputTokens: result.outputTokens,
       };
       streamEl.remove();
-      await this.plugin.history.append(reply);
+      await this.plugin.transcript.append(reply);
+
+      // The reply landed, so this chat has earned storage. Opening a note never
+      // writes to it; only getting an answer does.
+      await this.plugin.persistNoteChat();
+
       await this.appendTurn(reply);
+      this.renderScope();
       this.setStatus(this.describeBackend());
     } catch (error) {
       // Roll the unanswered question back and hand the text to the composer, so
       // nothing typed is lost and the transcript stays coherent.
       streamEl.remove();
-      await this.plugin.history.dropLast();
+      await this.plugin.transcript.dropLast();
       userTurnEl.remove();
-      if (this.plugin.history.messages.length === 0) {
+      if (this.plugin.transcript.messages.length === 0) {
         this.showEmptyState();
       }
       this.inputEl.value = content;
       this.setStatus(error instanceof Error ? error.message : String(error), true);
     } finally {
       this.setBusy(false);
+
+      // Apply a note change that arrived while the reply was streaming.
+      if (this.pendingSwitch !== undefined) {
+        const target = this.pendingSwitch;
+        this.pendingSwitch = undefined;
+        await this.switchTo(target);
+      }
     }
   }
 
@@ -467,16 +569,23 @@ export class ChorusView extends ItemView {
 
   /** Clears the vault's conversation. */
   async clear(): Promise<void> {
-    if (this.plugin.history.messages.length === 0) return;
-    await this.plugin.history.clear();
+    if (this.plugin.transcript.messages.length === 0) return;
+    await this.plugin.transcript.clear();
     await this.renderTranscript();
     this.setStatus(this.describeBackend());
     new Notice('Chorus chat cleared.');
   }
 
-  /** Called by the plugin when settings change, so the status line stays true. */
-  refresh(): void {
-    void this.renderTranscript();
+  /**
+   * Called by the plugin when settings change.
+   *
+   * Re-resolves the scope as well as redrawing, because switching between
+   * note-scoped and vault-wide chats changes which transcript should be open.
+   */
+  async refresh(): Promise<void> {
+    await this.syncScope();
+    await this.renderTranscript();
+    this.renderScope();
     this.setStatus(this.describeBackend());
   }
 }

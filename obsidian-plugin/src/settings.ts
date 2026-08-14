@@ -30,6 +30,13 @@ export interface ChorusSettings {
   systemPrompt: string;
   maxTokens: number;
   showUsage: boolean;
+  /**
+   * Whether a chat belongs to a note or to the whole vault.
+   *
+   * Note-scoped chats are pointed to from the note's frontmatter, so they survive
+   * renames and moves.
+   */
+  chatScope: 'note' | 'vault';
 }
 
 /**
@@ -62,6 +69,7 @@ export const DEFAULT_SETTINGS: ChorusSettings = {
     'You are a concise assistant embedded in an Obsidian vault. Prefer short, direct answers. Use Markdown.',
   maxTokens: 4096,
   showUsage: true,
+  chatScope: 'note',
 };
 
 /** Settings UI. Only the selected backend's fields are shown, to cut noise. */
@@ -245,6 +253,22 @@ export class ChorusSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }
         }),
+      );
+
+    new Setting(containerEl)
+      .setName('Chat scope')
+      .setDesc(
+        'A chat per note, or one chat for the whole vault. Note chats are recorded in the note\'s frontmatter, and are only created once a reply arrives.',
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('note', 'One chat per note')
+          .addOption('vault', 'One chat for the vault')
+          .setValue(settings.chatScope)
+          .onChange(async (value) => {
+            settings.chatScope = value as 'note' | 'vault';
+            await this.plugin.saveSettings();
+          }),
       );
 
     new Setting(containerEl)
