@@ -161,6 +161,10 @@ export async function listMessages(conversationId) {
     content: item.content,
     reasoning: item.reasoning,
     reasoningItem: item.reasoningItem,
+    // Returned so a reloaded thread shows the same per-turn usage the live
+    // stream did; without these the footer would only ever appear once.
+    inputTokens: item.inputTokens ?? 0,
+    outputTokens: item.outputTokens ?? 0,
     createdAt: item.createdAt,
   }));
 }

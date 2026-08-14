@@ -34,12 +34,21 @@
  * @property {string} description One-line guidance shown in the picker.
  * @property {number} maxOutputTokens Output cap enforced server-side.
  * @property {boolean} emitsReasoning Whether the model can return a reasoning trace.
+ * @property {{inputPerMillion: number, outputPerMillion: number}} pricing On-demand
+ *   USD per million tokens, used only for the indicative per-turn cost in the UI.
  * @property {boolean} [default] Marks the default selection.
  */
 
 /**
  * Order here is the order shown in the picker, and the entry flagged `default`
  * is preselected for a new conversation.
+ *
+ * Pricing note: Grok's rates were read from the AWS Price List API for the
+ * us-east-2 standard tier, which is the region Grok is pinned to. The Price List
+ * API does not yet publish Claude 4.5 Sonnet or Opus, so those use AWS published
+ * list prices for the `global.` inference profile. Rates drift, and the figures
+ * exclude prompt-cache reads and writes, which is why the UI presents the result
+ * as an estimate rather than a billed amount.
  *
  * @type {ModelDefinition[]}
  */
@@ -58,6 +67,7 @@ export const MODELS = [
     // reasoning deltas. Left false so the UI does not promise a panel that never
     // fills.
     emitsReasoning: false,
+    pricing: { inputPerMillion: 1.25, outputPerMillion: 2.5 },
     default: true,
   },
   {
@@ -72,6 +82,9 @@ export const MODELS = [
     // The reasoning is returned encrypted with no readable summary, verified
     // against the live endpoint, so there is still nothing to display.
     emitsReasoning: false,
+    // Reasoning tokens bill as output, so the estimate stays correct here even
+    // though the trace itself is never shown.
+    pricing: { inputPerMillion: 1.25, outputPerMillion: 2.5 },
   },
   {
     id: 'claude-sonnet-4-5',
@@ -82,6 +95,7 @@ export const MODELS = [
     description: 'Balanced and quick for everyday chat.',
     maxOutputTokens: 4096,
     emitsReasoning: false,
+    pricing: { inputPerMillion: 3.0, outputPerMillion: 15.0 },
   },
   {
     id: 'claude-opus-4-5',
@@ -92,6 +106,7 @@ export const MODELS = [
     description: 'Most capable Claude. Use for complex reasoning and analysis.',
     maxOutputTokens: 8192,
     emitsReasoning: false,
+    pricing: { inputPerMillion: 5.0, outputPerMillion: 25.0 },
   },
 ];
 
@@ -115,15 +130,18 @@ export function findModel(id) {
 /**
  * Public model list for the client. Deliberately omits `modelId` and
  * `transport` so the browser never learns the underlying Bedrock identifiers.
+ * `pricing` is included because the per-turn cost estimate is rendered in the
+ * browser, and published rates are not sensitive.
  *
- * @returns {Array<{id: string, label: string, vendor: string, description: string, default: boolean}>}
+ * @returns {Array<{id: string, label: string, vendor: string, description: string, pricing: Object, default: boolean}>}
  */
 export function publicModels() {
-  return MODELS.map(({ id, label, vendor, description, default: isDefault }) => ({
+  return MODELS.map(({ id, label, vendor, description, pricing, default: isDefault }) => ({
     id,
     label,
     vendor,
     description,
+    pricing,
     default: Boolean(isDefault),
   }));
 }

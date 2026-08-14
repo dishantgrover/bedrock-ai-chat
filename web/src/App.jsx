@@ -203,6 +203,7 @@ export default function App() {
     // The server only stores a turn once the model produced something, so a
     // failed turn must not leave a message on screen that a refresh would erase.
     let turnPersisted = true;
+    let usage = { inputTokens: 0, outputTokens: 0 };
 
     try {
       await api.streamMessage({
@@ -215,6 +216,10 @@ export default function App() {
         },
         onDone: (payload) => {
           turnPersisted = payload?.persisted !== false;
+          usage = {
+            inputTokens: payload?.inputTokens ?? 0,
+            outputTokens: payload?.outputTokens ?? 0,
+          };
         },
         onError: (message) => {
           setError(message);
@@ -236,7 +241,10 @@ export default function App() {
       setStreamingText(null);
 
       if (accumulated) {
-        setMessages((previous) => [...previous, { role: 'assistant', content: accumulated }]);
+        setMessages((previous) => [
+          ...previous,
+          { role: 'assistant', content: accumulated, ...usage },
+        ]);
       } else if (!turnPersisted) {
         // Nothing was stored, so roll the optimistic message back off screen and
         // hand the text back to the composer rather than losing what was typed.
@@ -367,6 +375,9 @@ export default function App() {
                   key={`${message.role}-${index}`}
                   role={message.role}
                   content={message.content}
+                  inputTokens={message.inputTokens}
+                  outputTokens={message.outputTokens}
+                  pricing={activeModel?.pricing}
                 />
               ))}
 
