@@ -1,0 +1,11 @@
+node_modules/
+
+# Build output. Rebuilt from source with `npm run build`, so a committed copy
+# would only ever go stale against the TypeScript beside it.
+main.js
+*.js.map
+
+# Written by Obsidian at runtime inside the installed plugin folder. Listed here
+# because this directory doubles as the place people build from.
+data.json
+history.json

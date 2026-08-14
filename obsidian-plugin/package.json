@@ -1,0 +1,20 @@
+{
+  "name": "obsidian-chorus",
+  "version": "0.1.0",
+  "description": "One AI chat per vault for Obsidian, with a bring-your-own-model backend.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "check": "tsc --noEmit --skipLibCheck"
+  },
+  "keywords": ["obsidian", "obsidian-plugin", "ai", "bedrock", "anthropic", "claude"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "20.11.30",
+    "builtin-modules": "3.3.0",
+    "esbuild": "0.20.2",
+    "obsidian": "1.5.7",
+    "typescript": "5.4.3"
+  }
+}

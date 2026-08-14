@@ -1,0 +1,274 @@
+.chorus-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: var(--size-4-2);
+}
+
+.chorus-transcript {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--size-4-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-3);
+  /* Stated explicitly: a custom view can inherit user-select: none from the
+     surrounding workspace chrome, which silently makes replies unselectable. */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.chorus-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: var(--font-ui-small);
+  padding: var(--size-4-4);
+}
+
+.chorus-turn-user {
+  align-self: flex-end;
+  max-width: 85%;
+  background: var(--background-modifier-hover);
+  border-radius: var(--radius-l);
+  padding: var(--size-4-2) var(--size-4-3);
+  word-break: break-word;
+}
+
+.chorus-turn-text {
+  white-space: pre-wrap;
+}
+
+/* Records what was attached, since the note text is not kept in the transcript. */
+.chorus-turn-attachment {
+  margin-bottom: var(--size-2-2);
+  padding-bottom: var(--size-2-2);
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.chorus-turn-assistant {
+  max-width: 100%;
+}
+
+.chorus-turn-assistant p:first-child {
+  margin-top: 0;
+}
+
+.chorus-turn-assistant p:last-child {
+  margin-bottom: 0;
+}
+
+/* Live text while the reply streams in. Plain text rather than rendered Markdown,
+   swapped for the rendered version once the turn completes. */
+.chorus-turn-streaming {
+  max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chorus-turn-streaming::after {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--text-muted);
+  animation: chorus-caret 1s steps(2, start) infinite;
+}
+
+@keyframes chorus-caret {
+  to {
+    visibility: hidden;
+  }
+}
+
+/* The footer is out of the way until the turn is hovered, but its height is
+   always reserved so revealing it does not shift the transcript. */
+.chorus-turn-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  height: 1.6em;
+  margin-top: var(--size-2-1);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.chorus-turn-assistant:hover .chorus-turn-footer,
+.chorus-turn-footer:focus-within {
+  opacity: 1;
+}
+
+.chorus-usage {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.chorus-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 6px;
+  height: 1.6em;
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.chorus-copy-button:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* Code blocks get their own button, pinned to the block rather than the turn. */
+.chorus-code-wrap {
+  position: relative;
+}
+
+.chorus-code-copy {
+  position: absolute;
+  top: var(--size-2-2);
+  right: var(--size-2-2);
+  padding: 2px 8px;
+  font-size: var(--font-ui-smaller);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.chorus-code-wrap:hover .chorus-code-copy,
+.chorus-code-copy:focus {
+  opacity: 1;
+}
+
+.chorus-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-2);
+  padding: var(--size-4-2);
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.chorus-attach-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+  min-height: 1.8em;
+}
+
+.chorus-attach-button {
+  padding: 2px 8px;
+  font-size: var(--font-ui-smaller);
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.chorus-attach-button:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.chorus-attach-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.chorus-attach-hint {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+/* Shows the pending attachment and its approximate token cost before sending. */
+.chorus-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  padding: 2px 4px 2px 8px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  max-width: 100%;
+}
+
+.chorus-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chorus-chip-warn {
+  color: var(--text-warning);
+}
+
+.chorus-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.chorus-chip-remove:hover {
+  color: var(--text-normal);
+}
+
+.chorus-composer textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 3.5em;
+  font-family: inherit;
+}
+
+.chorus-composer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.chorus-status {
+  flex: 1;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chorus-status-error {
+  color: var(--text-error);
+  white-space: normal;
+}
+
+.chorus-settings-warning {
+  margin: var(--size-4-2) 0;
+  padding: var(--size-4-2);
+  border-left: 3px solid var(--text-warning);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.chorus-settings-textarea {
+  width: 100%;
+}

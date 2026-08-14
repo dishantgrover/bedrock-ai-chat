@@ -1,0 +1,10 @@
+{
+  "id": "chorus-chat",
+  "name": "Chorus",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "One AI chat per vault. Bring your own model through Amazon Bedrock, a Chorus proxy, or an Anthropic API key.",
+  "author": "Dishant Grover",
+  "authorUrl": "https://github.com/dishantgrover",
+  "isDesktopOnly": false
+}

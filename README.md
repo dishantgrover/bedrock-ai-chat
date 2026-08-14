@@ -34,8 +34,11 @@ template you can read in one sitting.
 - **Markdown rendering** with syntax highlighting and copy-to-clipboard
 - **No credentials in the browser** — the client holds only a JWT
 - **Closed origin** — the instance accepts traffic from CloudFront alone
+- **Per-turn token usage** with an indicative cost, shown on hover
 - **Cost guardrails** — per-user daily token caps and budget alerts, because
   Bedrock enforces no spend ceiling of its own
+- **An [Obsidian plugin](#obsidian-plugin)** that chats against this API from inside
+  a vault, and can attach the open note as context
 
 ## Models
 
@@ -107,6 +110,7 @@ server/     Express API, provider adapters, DynamoDB access
   scripts/          live verification against real Bedrock
 web/        React frontend
 infra/      CloudFormation template and packaging script
+obsidian-plugin/  companion Obsidian plugin, talks to this API
 ```
 
 ### Data model
@@ -237,6 +241,60 @@ unauthenticated request is rejected with 401, streams a reply, reloads the threa
 from DynamoDB to prove both turns persisted, then deletes it. **Run it per model**
 — the two Bedrock endpoints authorise differently, so Claude passing does not mean
 Grok will.
+
+## Obsidian plugin
+
+[`obsidian-plugin/`](obsidian-plugin/) is a companion plugin that puts a chat panel
+inside an [Obsidian](https://obsidian.md) vault. It is not published in Obsidian's
+community directory: you build it from this repository and copy three files into your
+vault, which takes about a minute. See its
+[README](obsidian-plugin/README.md) for setup.
+
+It can talk to this deployment over Cognito, or straight to Bedrock with an AWS key,
+or to Anthropic's API. The proxy option is the interesting one, because it is the only
+configuration where **no cloud credentials sit in the vault** — Obsidian stores plugin
+settings as plain text in a file that syncs wherever the vault syncs, so keeping AWS
+keys server-side matters more than it might seem.
+
+### What it took on the server side
+
+Three changes here, all small, all in this repository:
+
+**A second Cognito app client.** The web client is deliberately SRP-only, so the
+password is never transmitted to Cognito even in encrypted form. SRP needs a
+browser-grade crypto stack that an Obsidian plugin cannot reasonably carry, so the
+stack creates a separate client permitting `USER_PASSWORD_AUTH`, exposed as the
+`PluginUserPoolClientId` output. A second client rather than an extra flow on the
+first: the browser keeps its stronger guarantee, and the weaker client can be revoked
+on its own if a vault leaks.
+
+**Two accepted client IDs.** Access tokens name the client that minted them, so
+`auth.js` validates against both rather than switching the check off.
+
+**CORS on `/api`, scoped to Obsidian's origins.** Only needed for streaming.
+Obsidian's own HTTP helper bypasses CORS but buffers the entire response, so replies
+landed in one lump. Real streaming needs the platform `fetch`, which is subject to
+origin checks. Credentials are deliberately not allowed in that policy: auth is a
+bearer token rather than a cookie, so there is nothing for a hostile page to replay.
+
+The CloudFront behaviour for `/api/*` needed no change, because it already disabled
+caching, allowed `OPTIONS`, and — importantly — had compression switched off.
+CloudFront buffers while compressing, which silently defeats `text/event-stream`.
+
+### Notable pieces on the plugin side
+
+**SigV4 by hand.** The Bedrock backend signs requests itself rather than bundling the
+AWS SDK, which would add megabytes and pull in Node built-ins absent on mobile. Worth
+knowing if you read that code: every AWS service except S3 expects the canonical
+request path encoded *twice*, so a colon in a model ID appears as `%253A` in the
+string to sign. Getting it wrong returns a 403 whose message blames your secret key.
+
+**Attaching notes costs tokens on every later turn.** The plugin sends the note with
+the question, and the server then stores it as part of that message and replays it for
+the rest of the conversation. The attachment chip shows an approximate token count
+before you send for exactly this reason. This is the same history-resending cost
+described in [How conversation context works](#how-conversation-context-works-and-what-it-costs),
+just with a larger first message.
 
 ## Security
 
@@ -416,8 +474,10 @@ cannot be mapped. The workable design ignores the event payload and runs
 scan-and-diff against live Cognito subs, paired with a scheduled sweep, since
 orphans also arise from causes other than deletion.
 
-**File attachments** for `.txt` and `.md`. No S3 needed: read in the browser and
-send as text. The open question is cost, given attachments are resent every turn.
+**File attachments** for `.txt` and `.md` in the web app. No S3 needed: read in the
+browser and send as text. The open question is cost, given attachments are resent
+every turn. The [Obsidian plugin](#obsidian-plugin) already does this for notes, and
+shows an approximate token count before sending; the same affordance would work here.
 
 **WAF** on the CloudFront distribution for rate limiting.
 
